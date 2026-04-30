@@ -744,6 +744,10 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fmt_loading("Scanning", SYMBOL, tf), parse_mode=ParseMode.MARKDOWN
     )
     try:
+        import os
+        port = os.environ.get("PORT") or os.environ.get("API_PORT", "8000")
+        base = f"http://localhost:{port}"
+
         data = await _post("/signal", {"symbol": SYMBOL, "timeframe": tf, "execute": False})
         if data.get("action") == "NO_TRADE":
             text = fmt_no_trade(data.get("reasoning","No setup"), data.get("news_blocked", False))
@@ -762,6 +766,30 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fmt_signal(data, risk, profile), parse_mode=ParseMode.MARKDOWN,
                 reply_markup=signal_action_kb(data["action"], tf, SYMBOL),
             )
+            # Send signal chart
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        f"{base}/chart/signal",
+                        json={"symbol": SYMBOL, "timeframe": tf, "execute": False},
+                    )
+                    if resp.status_code == 200:
+                        action = data.get("action","")
+                        caption = (
+                            f"{'🟢 BUY' if action=='BUY' else '🔴 SELL'} "
+                            f"`{SYMBOL}` `{tf}`\n"
+                            f"Entry: `{data.get('entry')}` | "
+                            f"SL: `{data.get('stop_loss')}` | "
+                            f"TP: `{data.get('take_profit')}` | "
+                            f"R:R: `1:{data.get('rr_ratio')}`"
+                        )
+                        await update.message.reply_photo(
+                            photo=resp.content,
+                            caption=caption,
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+            except Exception as chart_exc:
+                logger.warning("Signal chart failed: %s", chart_exc)
     except Exception as exc:
         await msg.edit_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN)
 
@@ -1115,15 +1143,44 @@ async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @restricted
 async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text(
-        f"🌅 Generating morning briefing for {SYMBOL}...\n_This takes ~30 seconds_",
+        f"🌅 Generating briefing for {SYMBOL}...\n_This takes ~30 seconds_",
         parse_mode=ParseMode.MARKDOWN,
     )
     try:
+        import os
+        import httpx
+        port = os.environ.get("PORT") or os.environ.get("API_PORT", "8000")
+        base = f"http://localhost:{port}"
+
+        # Get briefing data
         data  = await _post("/briefing", {"symbol": SYMBOL})
         parts = _fmt_briefing(data)
+
+        # Send first text part
         await msg.edit_text(parts[0], parse_mode=ParseMode.MARKDOWN)
+
+        # Generate and send chart
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.get(f"{base}/chart/mtf", params={"symbol": SYMBOL})
+                if resp.status_code == 200:
+                    caption = (
+                        f"📊 *{SYMBOL} Multi-Timeframe Chart*\n"
+                        f"D1 | H4 | H1  •  {data.get('generated_at','')}\n"
+                        f"Session: *{data.get('session','')}*  →  Next: _{data.get('next_session','')}_"
+                    )
+                    await update.message.reply_photo(
+                        photo=resp.content,
+                        caption=caption,
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+        except Exception as chart_exc:
+            logger.warning("Chart generation failed: %s", chart_exc)
+
+        # Send remaining text parts
         for part in parts[1:]:
             await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+
     except Exception as exc:
         logger.exception("Error in /briefing")
         await msg.edit_text(f"❌ Error: {exc}")

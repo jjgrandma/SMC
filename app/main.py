@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -191,6 +191,42 @@ async def morning_briefing(req: BriefingRequest):
         return result
     except Exception as exc:
         logger.exception("Error in /briefing")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/chart/mtf")
+async def chart_mtf(symbol: str = "XAUUSDm"):
+    """Generate multi-timeframe chart image (D1+H4+H1)."""
+    try:
+        from app.chart import chart_mtf as _chart_mtf
+        from app.tools import get_market_data, get_current_price
+        df_d1 = get_market_data(symbol, "D1")
+        df_h4 = get_market_data(symbol, "H4")
+        df_h1 = get_market_data(symbol, "H1")
+        price = get_current_price(symbol).get("mid", 0.0)
+        buf = _chart_mtf(df_d1, df_h4, df_h1, symbol, price)
+        return Response(content=buf.read(), media_type="image/png")
+    except Exception as exc:
+        logger.exception("Error in /chart/mtf")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/chart/signal")
+async def chart_signal_endpoint(req: SignalRequest):
+    """Generate signal chart with entry/SL/TP marked."""
+    try:
+        from app.chart import chart_signal as _chart_signal
+        from app.tools import get_market_data
+        sig = await agent.get_signal(req.symbol, req.timeframe)
+        if sig.get("action") == "NO_TRADE":
+            raise HTTPException(status_code=204, detail="No trade signal")
+        df = get_market_data(req.symbol, req.timeframe)
+        buf = _chart_signal(df, req.symbol, req.timeframe, sig)
+        return Response(content=buf.read(), media_type="image/png")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error in /chart/signal")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
