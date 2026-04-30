@@ -29,6 +29,12 @@ from app.config import get_settings
 from app.risk import RiskManager, RiskParams
 from app.scanner import SignalScanner, _format_alert
 from app.user_profile import get_profile_store
+from bot.ui import (
+    Icon, DIV, DIV2, fmt_loading, fmt_error, fmt_no_trade,
+    fmt_signal, fmt_analysis, fmt_performance, fmt_profile,
+    fmt_status, fmt_history, fmt_main_menu,
+    main_menu_kb, back_kb, signal_action_kb, analysis_action_kb, kb,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -39,6 +45,45 @@ SYMBOL = settings.symbol
 
 VALID_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
 CONFIDENCE_LEVELS = {"LOW", "MEDIUM", "HIGH"}
+
+# ---------------------------------------------------------------------------
+# Reusable keyboard builders
+# ---------------------------------------------------------------------------
+
+def _back_button() -> list[list[InlineKeyboardButton]]:
+    """Single back-to-menu row."""
+    return [[InlineKeyboardButton("🏠 Back to Menu", callback_data="main_menu")]]
+
+
+def _back_keyboard() -> InlineKeyboardMarkup:
+    """Markup with just the back button."""
+    return InlineKeyboardMarkup(_back_button())
+
+
+def _action_keyboard(extra_buttons: list[list[InlineKeyboardButton]] | None = None) -> InlineKeyboardMarkup:
+    """Keyboard with optional extra buttons + back button at bottom."""
+    rows = extra_buttons or []
+    rows += _back_button()
+    return InlineKeyboardMarkup(rows)
+
+
+def _main_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Analyze H1",  callback_data="analyze_H1"),
+         InlineKeyboardButton("📊 Analyze H4",  callback_data="analyze_H4")],
+        [InlineKeyboardButton("⚡ Signal H1",   callback_data="signal_H1"),
+         InlineKeyboardButton("⚡ Signal H4",   callback_data="signal_H4")],
+        [InlineKeyboardButton("📋 Trade Card",  callback_data="trade_H1"),
+         InlineKeyboardButton("📈 Swing",       callback_data="swing")],
+        [InlineKeyboardButton("🌅 Briefing",    callback_data="briefing"),
+         InlineKeyboardButton("📋 Status",      callback_data="status")],
+        [InlineKeyboardButton("📉 Performance", callback_data="performance"),
+         InlineKeyboardButton("📋 History",     callback_data="history")],
+        [InlineKeyboardButton("🧠 Memory",      callback_data="memory"),
+         InlineKeyboardButton("👤 Profile",     callback_data="profile")],
+        [InlineKeyboardButton("🔔 Alerts ON/OFF", callback_data="toggle_alerts"),
+         InlineKeyboardButton("🖥 MT5 Status",  callback_data="mt5_status")],
+    ])
 # ---------------------------------------------------------------------------
 # Auth guard
 # ---------------------------------------------------------------------------
@@ -489,55 +534,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = profile_store.get(user.id)
     profile.username = user.username or user.first_name or ""
     profile_store.update(profile)
-
-    keyboard = [
-        [InlineKeyboardButton("📊 Analyze", callback_data="analyze_H1"),
-         InlineKeyboardButton("⚡ Signal", callback_data="signal_H1")],
-        [InlineKeyboardButton("📈 Swing", callback_data="swing"),
-         InlineKeyboardButton("📋 Status", callback_data="status")],
-        [InlineKeyboardButton("� Performance", callback_data="performance"),
-         InlineKeyboardButton("📋 History", callback_data="history")],
-        [InlineKeyboardButton("�👤 My Profile", callback_data="profile"),
-         InlineKeyboardButton("🔔 Alerts ON/OFF", callback_data="toggle_alerts")],
-    ]
-    text = (
-        f"🤖 *Agentic Forex Trading System*\n\n"
-        f"Powered by SMC + Dual AI (Gemini + Groq)\n\n"
-        f"📋 *Analysis*\n"
-        f"/analyze `[TF]` — Full SMC analysis\n"
-        f"/briefing — 🌅 Morning briefing + day plan\n\n"
-        f"⚡ *Signals*\n"
-        f"/trade `[TF]` — 📋 Manual signal card _(full reasoning)_\n"
-        f"/signal `[TF]` — Quick signal\n"
-        f"/swing — Swing trade idea\n\n"
-        f"📊 *Account*\n"
-        f"/status — Live price & trades\n"
-        f"/setbalance `<amount>` — Set account size\n"
-        f"/setrisk `<percent>` — Set risk % per trade\n"
-        f"/settf `<TF>` — Default timeframe\n"
-        f"/setconfidence `<LOW|MEDIUM|HIGH>`\n"
-        f"/alerts — Toggle auto-alerts\n"
-        f"/myprofile — Your settings\n\n"
-        f"🧠 *Learning*\n"
-        f"/memory — Bot's learned patterns & stats\n"
-        f"/outcome — Mark a signal WIN/LOSS\n"
-        f"/addlesson — Teach the bot manually\n\n"
-        f"📉 *Performance*\n"
-        f"/performance — Full dashboard with win rate\n"
-        f"/performance 30 — Last 30 days\n"
-        f"/history — Trade history list\n\n"
-        f"🖥 *MetaTrader 5*\n"
-        f"/mt5connect — Connect MT5\n"
-        f"/mt5status — Account & positions\n"
-        f"/mt5close `<ticket|all>` — Close position\n\n"
-        f"🎯 `{SYMBOL}` | "
-        f"Balance: `${profile.account_balance:,.0f}` | "
-        f"Risk: `{profile.risk_percent}%`"
-    )
     await update.message.reply_text(
-        text,
+        fmt_main_menu(SYMBOL, profile),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=main_menu_kb(),
     )
 
 
@@ -670,7 +670,9 @@ async def cmd_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @restricted
 async def cmd_myprofile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = profile_store.get(update.effective_user.id)
-    await update.message.reply_text(_fmt_profile(profile), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(
+        fmt_profile(profile), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -683,14 +685,17 @@ async def cmd_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = profile_store.get(user_id)
     args = context.args
     tf = args[0].upper() if args and args[0].upper() in VALID_TIMEFRAMES else profile.timeframe
-
-    msg = await update.message.reply_text(f"🔍 Analyzing {SYMBOL} on `{tf}`...", parse_mode=ParseMode.MARKDOWN)
+    msg = await update.message.reply_text(
+        fmt_loading("Analyzing", SYMBOL, tf), parse_mode=ParseMode.MARKDOWN
+    )
     try:
         data = await _post("/analyze", {"symbol": SYMBOL, "timeframe": tf})
-        await msg.edit_text(_fmt_analysis(data), parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(
+            fmt_analysis(data), parse_mode=ParseMode.MARKDOWN,
+            reply_markup=analysis_action_kb(tf),
+        )
     except Exception as exc:
-        logger.exception("Error in /analyze")
-        await msg.edit_text(f"❌ Error: {exc}")
+        await msg.edit_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN)
 
 
 # ---------------------------------------------------------------------------
@@ -703,17 +708,30 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile = profile_store.get(user_id)
     args = context.args
     tf = args[0].upper() if args and args[0].upper() in VALID_TIMEFRAMES else profile.timeframe
-
     msg = await update.message.reply_text(
-        f"⚡ Scanning {SYMBOL} `{tf}` for setups...", parse_mode=ParseMode.MARKDOWN
+        fmt_loading("Scanning", SYMBOL, tf), parse_mode=ParseMode.MARKDOWN
     )
     try:
         data = await _post("/signal", {"symbol": SYMBOL, "timeframe": tf, "execute": False})
-        text = _fmt_signal_manual(data, user_id)
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
+        if data.get("action") == "NO_TRADE":
+            text = fmt_no_trade(data.get("reasoning","No setup"), data.get("news_blocked", False))
+            await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+        else:
+            rm = RiskManager()
+            risk = rm.validate_and_size(RiskParams(
+                symbol=SYMBOL, direction=data["action"],
+                entry=float(data.get("entry") or 0),
+                stop_loss=float(data.get("stop_loss") or 0),
+                take_profit=float(data.get("take_profit") or 0),
+                account_balance=profile.account_balance,
+                risk_percent=profile.risk_percent,
+            ))
+            await msg.edit_text(
+                fmt_signal(data, risk, profile), parse_mode=ParseMode.MARKDOWN,
+                reply_markup=signal_action_kb(data["action"], tf, SYMBOL),
+            )
     except Exception as exc:
-        logger.exception("Error in /signal")
-        await msg.edit_text(f"❌ Error: {exc}")
+        await msg.edit_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN)
 
 
 # ---------------------------------------------------------------------------
@@ -737,13 +755,12 @@ async def cmd_swing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @restricted
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📊 Fetching status...")
+    msg = await update.message.reply_text(fmt_loading("Fetching", SYMBOL), parse_mode=ParseMode.MARKDOWN)
     try:
         data = await _post("/status", {"symbol": SYMBOL})
-        await msg.edit_text(_fmt_status(data), parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(fmt_status(data), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
     except Exception as exc:
-        logger.exception("Error in /status")
-        await msg.edit_text(f"❌ Error: {exc}")
+        await msg.edit_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN)
 
 
 # ---------------------------------------------------------------------------
@@ -763,58 +780,136 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("analyze_"):
         tf = data.split("_")[1]
-        await query.edit_message_text(f"🔍 Analyzing {SYMBOL} `{tf}`...", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(fmt_loading("Analyzing", SYMBOL, tf), parse_mode=ParseMode.MARKDOWN)
         try:
             result = await _post("/analyze", {"symbol": SYMBOL, "timeframe": tf})
-            await query.edit_message_text(_fmt_analysis(result), parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(
+                fmt_analysis(result), parse_mode=ParseMode.MARKDOWN,
+                reply_markup=analysis_action_kb(tf),
+            )
         except Exception as exc:
-            await query.edit_message_text(f"❌ Error: {exc}")
+            await query.edit_message_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data.startswith("signal_"):
         tf = data.split("_")[1]
-        await query.edit_message_text(f"⚡ Scanning {SYMBOL} `{tf}`...", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(fmt_loading("Scanning", SYMBOL, tf), parse_mode=ParseMode.MARKDOWN)
         try:
             result = await _post("/signal", {"symbol": SYMBOL, "timeframe": tf, "execute": False})
-            await query.edit_message_text(_fmt_signal_manual(result, user_id), parse_mode=ParseMode.MARKDOWN)
+            profile = profile_store.get(user_id)
+            if result.get("action") == "NO_TRADE":
+                text = fmt_no_trade(result.get("reasoning","No setup"), result.get("news_blocked", False))
+                await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+            else:
+                rm = RiskManager()
+                risk = rm.validate_and_size(RiskParams(
+                    symbol=SYMBOL, direction=result["action"],
+                    entry=float(result.get("entry") or 0),
+                    stop_loss=float(result.get("stop_loss") or 0),
+                    take_profit=float(result.get("take_profit") or 0),
+                    account_balance=profile.account_balance,
+                    risk_percent=profile.risk_percent,
+                ))
+                await query.edit_message_text(
+                    fmt_signal(result, risk, profile), parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=signal_action_kb(result["action"], tf, SYMBOL),
+                )
         except Exception as exc:
-            await query.edit_message_text(f"❌ Error: {exc}")
+            await query.edit_message_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data == "swing":
-        await query.edit_message_text(f"📈 Building swing idea...")
+        await query.edit_message_text(fmt_loading("Building swing idea", SYMBOL), parse_mode=ParseMode.MARKDOWN)
         try:
             result = await _post("/swing", {"symbol": SYMBOL})
-            await query.edit_message_text(_fmt_swing(result), parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(_fmt_swing(result), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
         except Exception as exc:
-            await query.edit_message_text(f"❌ Error: {exc}")
+            await query.edit_message_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data == "status":
         try:
             result = await _post("/status", {"symbol": SYMBOL})
-            await query.edit_message_text(_fmt_status(result), parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(fmt_status(result), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
         except Exception as exc:
-            await query.edit_message_text(f"❌ Error: {exc}")
+            await query.edit_message_text(fmt_error(str(exc)), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data == "profile":
         profile = profile_store.get(user_id)
-        await query.edit_message_text(_fmt_profile(profile), parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(fmt_profile(profile), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data == "performance":
         from app.journal import get_journal
         stats = get_journal().get_stats()
-        await query.edit_message_text(_fmt_performance(stats), parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(fmt_performance(stats), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
 
     elif data == "history":
         from app.journal import get_journal
         records = get_journal().get_all()[:15]
-        if not records:
-            await query.edit_message_text("📋 No trade history yet.")
-            return
-        lines = ["📋 *Recent Trades*", "━━━━━━━━━━━━━━━━━━━━━━━━"]
-        for r in records:
-            emoji = "✅" if r.outcome=="WIN" else "❌" if r.outcome=="LOSS" else "⏳" if r.outcome=="PENDING" else "➖"
-            ae    = "🟢" if r.action=="BUY" else "🔴"
-            lines.append(f"{emoji} {ae} `{r.action}` `{r.timeframe}` @ `{r.entry}` | `{r.session}` | {r.timestamp[:10]}")
-        await query.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(fmt_history(records), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+
+    elif data == "main_menu":
+        profile = profile_store.get(user_id)
+        await query.edit_message_text(
+            fmt_main_menu(SYMBOL, profile), parse_mode=ParseMode.MARKDOWN,
+            reply_markup=main_menu_kb(),
+        )
+
+    elif data == "briefing":
+        await query.edit_message_text("Generating morning briefing...\n_This takes ~30 seconds_", parse_mode=ParseMode.MARKDOWN)
+        try:
+            result = await _post("/briefing", {"symbol": SYMBOL})
+            parts = _fmt_briefing(result)
+            await query.edit_message_text(parts[0], parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+            for part in parts[1:]:
+                await query.message.reply_text(part, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}", reply_markup=_back_keyboard())
+
+    elif data == "memory":
+        from app.memory import get_memory
+        memory = get_memory()
+        stats = memory.get_stats()
+        wr = stats.win_rate
+        wr_emoji = "green" if wr >= 60 else "yellow" if wr >= 45 else "red"
+        text = (
+            f"*BOT MEMORY*\n\n"
+            f"Total signals: `{stats.total_signals}`\n"
+            f"Win rate: `{stats.win_rate}%` ({stats.wins}W / {stats.losses}L)\n"
+            f"Best TF: `{stats.best_timeframe or 'learning...'}` \n"
+            f"Best session: `{stats.best_session or 'learning...'}` \n"
+            f"Total lessons: `{stats.total_lessons}`"
+        )
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+
+    elif data == "mt5_status":
+        try:
+            from app.trader import MT5Trader
+            trader = MT5Trader()
+            if not trader.ensure_connected():
+                await query.edit_message_text("MT5 not connected. Use /mt5connect first.", reply_markup=_back_keyboard())
+                return
+            account = trader.get_account_info()
+            sym_info = trader.get_symbol_info(SYMBOL)
+            text = (
+                f"*MT5 STATUS*\n\n"
+                f"Balance: `${account.get('balance',0):,.2f}`\n"
+                f"Equity: `${account.get('equity',0):,.2f}`\n"
+                f"Mode: `{account.get('trade_mode_name','N/A')}`\n\n"
+                f"*{SYMBOL}*\n"
+                f"Bid: `{sym_info.get('bid','N/A')}` | Ask: `{sym_info.get('ask','N/A')}`\n"
+                f"Spread: `{sym_info.get('spread','N/A')} pts`"
+            )
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}", reply_markup=_back_keyboard())
+
+    elif data.startswith("trade_"):
+        tf = data.split("_")[1]
+        await query.edit_message_text(f"Building manual trade card for {SYMBOL} {tf}...", reply_markup=_back_keyboard())
+        try:
+            result = await _post("/manual_signal", {"symbol": SYMBOL, "timeframe": tf})
+            text = _fmt_manual_signal(result, user_id)
+            await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+        except Exception as exc:
+            await query.edit_message_text(f"Error: {exc}", reply_markup=_back_keyboard())
 
     elif data == "toggle_alerts":
         profile = profile_store.get(user_id)
@@ -824,6 +919,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"🔔 Auto-alerts: *{status}*",
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_back_keyboard(),
         )
 
 
