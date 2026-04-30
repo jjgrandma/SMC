@@ -27,6 +27,11 @@ class UserProfile:
     timeframe: str = "H1"
     alerts_enabled: bool = True
     min_confidence: str = "MEDIUM"   # LOW | MEDIUM | HIGH
+    # Per-user MT5 credentials (optional)
+    mt5_login: int = 0
+    mt5_password: str = ""
+    mt5_server: str = ""
+    mt5_connected: bool = False      # last known connection state
 
 
 class ProfileStore:
@@ -76,6 +81,37 @@ class ProfileStore:
     def set_min_confidence(self, user_id: int, level: str) -> UserProfile:
         p = self.get(user_id)
         p.min_confidence = level.upper()
+        self.update(p)
+        return p
+
+    def set_mt5_credentials(
+        self,
+        user_id: int,
+        login: int,
+        password: str,
+        server: str,
+    ) -> UserProfile:
+        from app.crypto import encrypt_password
+        p = self.get(user_id)
+        p.mt5_login    = login
+        p.mt5_password = encrypt_password(password)   # stored encrypted
+        p.mt5_server   = server
+        p.mt5_connected = False
+        self.update(p)
+        return p
+
+    def set_mt5_connected(self, user_id: int, connected: bool) -> UserProfile:
+        p = self.get(user_id)
+        p.mt5_connected = connected
+        self.update(p)
+        return p
+
+    def clear_mt5_credentials(self, user_id: int) -> UserProfile:
+        p = self.get(user_id)
+        p.mt5_login     = 0
+        p.mt5_password  = ""
+        p.mt5_server    = ""
+        p.mt5_connected = False
         self.update(p)
         return p
 

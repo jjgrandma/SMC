@@ -16,5 +16,6 @@ yfinance>=1.0.0
 twelvedata>=1.4.0
 matplotlib>=3.8.0
 mplfinance>=0.12.10b0
+cryptography>=42.0.0
 # MetaTrader5 — Windows only, optional
 # MetaTrader5==5.0.45

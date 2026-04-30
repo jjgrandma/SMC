@@ -470,9 +470,20 @@ def fmt_performance(stats) -> str:
 
 
 def fmt_profile(profile) -> str:
+    from app.crypto import mask_password
     conf_icon = {"HIGH": Icon.HIGH, "MEDIUM": Icon.MEDIUM, "LOW": Icon.LOW}.get(profile.min_confidence, "")
     alert_str = f"{Icon.OK} ON" if profile.alerts_enabled else f"{Icon.ERROR} OFF"
     max_risk  = profile.account_balance * profile.risk_percent / 100
+
+    mt5_str = ""
+    if profile.mt5_login:
+        mt5_str = (
+            f"\n{Icon.MT5} MT5 Account\n"
+            f"  Login:  `{profile.mt5_login}`\n"
+            f"  Server: `{profile.mt5_server}`\n"
+            f"  Pass:   `{mask_password(profile.mt5_password)}`\n"
+            f"  Status: `{'Connected' if profile.mt5_connected else 'Disconnected'}`"
+        )
 
     return (
         f"{Icon.PROFILE} *YOUR PROFILE*\n"
@@ -481,7 +492,8 @@ def fmt_profile(profile) -> str:
         f"{Icon.RISK}  Risk/Trade: `{profile.risk_percent}%` = `${max_risk:,.2f}`\n"
         f"{Icon.CHART} Default TF: `{profile.timeframe}`\n"
         f"{Icon.ALERT} Alerts:     {alert_str}\n"
-        f"{conf_icon} Min Conf:   `{profile.min_confidence}`\n"
+        f"{conf_icon} Min Conf:   `{profile.min_confidence}`"
+        f"{mt5_str}\n"
         f"{DIV}\n"
         f"_/setbalance • /setrisk • /settf • /alerts_"
     )

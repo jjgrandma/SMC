@@ -7,6 +7,8 @@ data/user_profiles.json
 data/memory.json
 data/lessons.json
 data/journal.json
+data/price_alerts.json
+data/secret.key
 
 # Python
 __pycache__/

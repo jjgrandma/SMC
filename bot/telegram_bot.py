@@ -18,6 +18,7 @@ from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ConversationHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -29,6 +30,8 @@ from app.config import get_settings
 from app.risk import RiskManager, RiskParams
 from app.scanner import SignalScanner, _format_alert
 from app.user_profile import get_profile_store
+from app.price_alerts import get_alert_store, PriceAlert, PriceWatcher
+from app.user_mt5 import connect_user_mt5, disconnect_user_mt5, get_user_mt5_status
 from bot.ui import (
     Icon, DIV, DIV2, fmt_loading, fmt_error, fmt_no_trade,
     fmt_signal, fmt_analysis, fmt_performance, fmt_profile,
@@ -984,135 +987,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# /mt5connect
-# ---------------------------------------------------------------------------
-
-@restricted
-async def cmd_mt5connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🔌 Connecting to MetaTrader 5...")
-    try:
-        from app.trader import MT5Trader
-        trader = MT5Trader()
-        status = trader.connect()
-        if status.connected:
-            mode_emoji = "🟡" if status.trade_mode == "DEMO" else "🔴"
-            text = (
-                f"✅ *MT5 Connected*\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 Account:  `{status.account_login}` — {status.account_name}\n"
-                f"🏦 Broker:   `{status.broker}`\n"
-                f"🌐 Server:   `{status.server}`\n"
-                f"{mode_emoji} Mode:     `{status.trade_mode}`\n"
-                f"💰 Balance:  `${status.balance:,.2f}`\n"
-                f"📈 Equity:   `${status.equity:,.2f}`\n"
-                f"🆓 Free Margin: `${status.margin_free:,.2f}`\n"
-                f"⚡ Leverage: `1:{status.leverage}`\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"_MT5 terminal is live and ready_"
-            )
-        else:
-            text = f"❌ *MT5 Connection Failed*\n\n`{status.error}`\n\n_Check MT5_LOGIN, MT5_PASSWORD, MT5_SERVER in .env_"
-        await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN)
-    except Exception as exc:
-        await msg.edit_text(f"❌ Error: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# /mt5status
-# ---------------------------------------------------------------------------
-
-@restricted
-async def cmd_mt5status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("📊 Fetching MT5 status...")
-    try:
-        from app.trader import MT5Trader
-        trader = MT5Trader()
-        if not trader.ensure_connected():
-            await msg.edit_text("❌ MT5 not connected. Use /mt5connect first.")
-            return
-
-        account = trader.get_account_info()
-        positions = trader.get_open_positions(SYMBOL)
-        sym_info  = trader.get_symbol_info(SYMBOL)
-
-        mode_emoji = "🟡" if account.get("trade_mode_name") == "DEMO" else "🔴"
-        lines = [
-            f"📊 *MT5 STATUS*",
-            f"━━━━━━━━━━━━━━━━━━━━",
-            f"{mode_emoji} Mode: `{account.get('trade_mode_name','N/A')}`",
-            f"💰 Balance:  `${account.get('balance',0):,.2f}`",
-            f"📈 Equity:   `${account.get('equity',0):,.2f}`",
-            f"📉 Margin:   `${account.get('margin',0):,.2f}`",
-            f"🆓 Free:     `${account.get('margin_free',0):,.2f}`",
-            f"",
-            f"💹 *{SYMBOL} Live*",
-            f"  Bid: `{sym_info.get('bid','N/A')}` | Ask: `{sym_info.get('ask','N/A')}`",
-            f"  Spread: `{sym_info.get('spread','N/A')} pts`",
-            f"",
-        ]
-        if positions:
-            lines.append(f"🔄 *Open Positions ({len(positions)})*")
-            for p in positions:
-                pnl = p.get("profit", 0)
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                lines.append(
-                    f"  {emoji} #{p.get('ticket')} {p.get('direction')} "
-                    f"{p.get('volume')} lots @ {p.get('price_open')} "
-                    f"| P&L: `${pnl:.2f}`"
-                )
-        else:
-            lines.append("💤 No open positions")
-
-        await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-    except Exception as exc:
-        await msg.edit_text(f"❌ Error: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# /mt5close <ticket>  or  /mt5close all
-# ---------------------------------------------------------------------------
-
-@restricted
-async def cmd_mt5close(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text(
-            "Usage:\n`/mt5close 12345` — close specific ticket\n`/mt5close all` — close all positions",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    msg = await update.message.reply_text("⏳ Closing position(s)...")
-    try:
-        from app.trader import MT5Trader
-        trader = MT5Trader()
-        if not trader.ensure_connected():
-            await msg.edit_text("❌ MT5 not connected. Use /mt5connect first.")
-            return
-
-        if args[0].lower() == "all":
-            results = trader.close_all_positions(SYMBOL)
-            lines = [f"🔄 *Close All Results*"]
-            for r in results:
-                emoji = "✅" if r.success else "❌"
-                lines.append(f"  {emoji} {r.message}")
-            if not results:
-                lines.append("  No open positions to close.")
-            await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-        else:
-            ticket = int(args[0])
-            result = trader.close_position(ticket)
-            emoji = "✅" if result.success else "❌"
-            await msg.edit_text(
-                f"{emoji} *Close Position #{ticket}*\n\n{result.message}",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-    except ValueError:
-        await msg.edit_text("❌ Invalid ticket number. Use `/mt5close 12345`", parse_mode=ParseMode.MARKDOWN)
-    except Exception as exc:
-        await msg.edit_text(f"❌ Error: {exc}")
-
-# ---------------------------------------------------------------------------
 # /trade [TF] — manual signal card
 # ---------------------------------------------------------------------------
 
@@ -1637,6 +1511,493 @@ async def cmd_outcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+# ---------------------------------------------------------------------------
+# /setalert <price> [note]  — set a custom price alert
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_setalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from datetime import datetime, timezone
+    user_id = update.effective_user.id
+    args    = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "*Set a Price Alert*\n\n"
+            "Usage: `/setalert <price> [note]`\n\n"
+            "Examples:\n"
+            "`/setalert 4580` — alert when price reaches 4580\n"
+            "`/setalert 4650 Resistance zone`\n\n"
+            "_The bot will notify you when price gets within 30 pips of your level._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    try:
+        price = float(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid price. Example: `/setalert 4580`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    note = " ".join(args[1:]) if len(args) > 1 else f"Custom level @ {price}"
+    now  = datetime.now(timezone.utc)
+
+    alert = PriceAlert(
+        id=f"CUSTOM_{user_id}_{int(price*100)}_{now.strftime('%H%M%S')}",
+        user_id=user_id,
+        symbol=SYMBOL,
+        timeframe="H1",
+        alert_type="CUSTOM",
+        direction="BOTH",
+        level_price=price,
+        level_top=price + 0.5,
+        level_bottom=price - 0.5,
+        proximity_pips=30,
+        description=note,
+        created_at=now.isoformat(),
+    )
+
+    store = get_alert_store()
+    store.add(alert)
+
+    await update.message.reply_text(
+        f"✅ *Alert Set*\n\n"
+        f"🎯 Level: `{price}`\n"
+        f"📏 Trigger: within `30 pips`\n"
+        f"📝 Note: _{note}_\n\n"
+        f"_You'll be notified when {SYMBOL} approaches `{price}`_\n"
+        f"_Use /myalerts to see all active alerts_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /myalerts — show active alerts
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_myalerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app.tools import get_current_price
+    from app.pip_utils import price_to_pips
+    user_id = update.effective_user.id
+    store   = get_alert_store()
+    active  = store.get_active(user_id)
+    price   = get_current_price(SYMBOL).get("mid", 0)
+
+    if not active:
+        await update.message.reply_text(
+            "📭 *No Active Alerts*\n\n"
+            "_Use /setalert to set a custom price alert_\n"
+            "_Alerts are also set automatically when the scanner finds key SMC levels_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    lines = [
+        f"🔔 *Active Price Alerts* ({len(active)})",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"💰 Current: `{price}`",
+        "",
+    ]
+
+    type_icons = {
+        "ORDER_BLOCK": "📦", "FVG": "🕳",
+        "LIQUIDITY": "💧", "CUSTOM": "🎯",
+    }
+
+    for a in active[:15]:
+        dist_pips = price_to_pips(abs(float(price) - a.level_price), a.symbol)
+        d_icon    = "🟢" if a.direction == "BUY" else "🔴" if a.direction == "SELL" else "⚪"
+        t_icon    = type_icons.get(a.alert_type, "⚡")
+        lines.append(
+            f"{t_icon} {d_icon} `{a.level_price:.2f}` "
+            f"({dist_pips:.0f} pips away)\n"
+            f"   _{a.description}_\n"
+            f"   `{a.id}`"
+        )
+
+    lines += [
+        "",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"_/cancelalert <id> — cancel specific alert_",
+        f"_/cancelalerts — cancel all alerts_",
+    ]
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------------------------------------------------------------------------
+# /cancelalert <id>
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_cancelalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args    = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "Usage: `/cancelalert <alert_id>`\n_Use /myalerts to see IDs_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    store = get_alert_store()
+    ok    = store.delete(args[0], user_id)
+
+    if ok:
+        await update.message.reply_text(f"✅ Alert `{args[0]}` cancelled.", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(f"❌ Alert not found: `{args[0]}`", parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------------------------------------------------------------------------
+# /cancelalerts — cancel all
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_cancelalerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    store   = get_alert_store()
+    count   = store.delete_all(user_id)
+    await update.message.reply_text(
+        f"✅ Cancelled `{count}` alert(s).",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MT5 Setup — multi-step conversation
+# ---------------------------------------------------------------------------
+
+MT5_LOGIN, MT5_PASSWORD, MT5_SERVER = range(3)
+
+
+@restricted
+async def cmd_mt5setup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start MT5 setup conversation."""
+    await update.message.reply_text(
+        "🖥 *MT5 Account Setup*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "I'll connect your personal MT5 account.\n"
+        "Your credentials are stored locally and never shared.\n\n"
+        "*Step 1 of 3*\n"
+        "Enter your MT5 *account number* (login):\n\n"
+        "_Example: `435557033`_\n\n"
+        "Send /cancel to stop.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return MT5_LOGIN
+
+
+async def mt5_get_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    try:
+        login = int(text)
+        if login <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid account number. Please enter a numeric login.\n_Example: `435557033`_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return MT5_LOGIN
+
+    context.user_data["mt5_login"] = login
+    await update.message.reply_text(
+        f"✅ Login: `{login}`\n\n"
+        f"*Step 2 of 3*\n"
+        f"Enter your MT5 *password*:\n\n"
+        f"_Your password is stored securely on this server only._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return MT5_PASSWORD
+
+
+async def mt5_get_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text.strip()
+
+    # Delete the message immediately — password must not stay in chat
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if len(password) < 3:
+        await update.effective_chat.send_message(
+            "❌ Password too short. Please try again.\n_Your message was deleted for security._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return MT5_PASSWORD
+
+    context.user_data["mt5_password"] = password
+
+    await update.effective_chat.send_message(
+        "✅ Password received and deleted from chat.\n\n"
+        "*Step 3 of 3*\n"
+        "Enter your broker *server name*:\n\n"
+        "Find it in MT5 → File → Login → Server field\n\n"
+        "_Examples:_\n"
+        "`Exness-MT5Trial9`\n"
+        "`ICMarkets-Demo02`\n"
+        "`XM-MT5`\n"
+        "`Pepperstone-Demo`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return MT5_SERVER
+
+
+async def mt5_get_server(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    server = update.message.text.strip()
+    if len(server) < 3:
+        await update.message.reply_text("❌ Invalid server name. Try again.")
+        return MT5_SERVER
+
+    user_id  = update.effective_user.id
+    login    = context.user_data.get("mt5_login", 0)
+    password = context.user_data.get("mt5_password", "")
+
+    msg = await update.message.reply_text(
+        f"🔌 Testing connection to `{server}`...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    # Save credentials
+    store = get_profile_store()
+    store.set_mt5_credentials(user_id, login, password, server)
+    profile = store.get(user_id)
+
+    # Test connection
+    status = connect_user_mt5(profile)
+
+    if status.connected:
+        mode_emoji = "🟡" if status.trade_mode == "DEMO" else "🔴"
+        await msg.edit_text(
+            f"✅ *MT5 Connected Successfully!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 Account: `{status.account_login}` — {status.account_name}\n"
+            f"🏦 Broker:  `{status.broker}`\n"
+            f"🌐 Server:  `{status.server}`\n"
+            f"{mode_emoji} Mode:    *{status.trade_mode}*\n"
+            f"💰 Balance: `${status.balance:,.2f}`\n"
+            f"📈 Equity:  `${status.equity:,.2f}`\n"
+            f"⚡ Leverage: `1:{status.leverage}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"_Your account balance has been updated in your profile._\n"
+            f"_Use /mt5status to check anytime._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await msg.edit_text(
+            f"❌ *Connection Failed*\n\n"
+            f"`{status.error}`\n\n"
+            f"*Common fixes:*\n"
+            f"• Make sure MT5 terminal is open on your PC\n"
+            f"• Check the server name is exact\n"
+            f"• Verify login and password\n\n"
+            f"_Use /mt5setup to try again_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    # Clear sensitive data from context
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def mt5_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.clear()
+    await update.message.reply_text("❌ MT5 setup cancelled.")
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# /mt5connect — connect using saved credentials
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_mt5connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    profile = profile_store.get(user_id)
+
+    if not profile.mt5_login:
+        await update.message.reply_text(
+            "⚙️ No MT5 credentials saved.\n\n"
+            "Use /mt5setup to configure your MT5 account.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    msg = await update.message.reply_text(
+        f"🔌 Connecting to MT5 account `{profile.mt5_login}`...",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    status = connect_user_mt5(profile)
+
+    if status.connected:
+        mode_emoji = "🟡" if status.trade_mode == "DEMO" else "🔴"
+        await msg.edit_text(
+            f"✅ *MT5 Connected*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 `{status.account_login}` — {status.account_name}\n"
+            f"🏦 `{status.broker}`\n"
+            f"🌐 `{status.server}`\n"
+            f"{mode_emoji} *{status.trade_mode}*\n"
+            f"💰 `${status.balance:,.2f}`\n"
+            f"📈 `${status.equity:,.2f}`\n"
+            f"⚡ `1:{status.leverage}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    else:
+        await msg.edit_text(
+            f"❌ *Connection Failed*\n\n`{status.error}`\n\n"
+            f"_Make sure MT5 terminal is open on your Windows PC_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
+# ---------------------------------------------------------------------------
+# /mt5status — show current MT5 status
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_mt5status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    profile = profile_store.get(user_id)
+
+    if not profile.mt5_login:
+        await update.message.reply_text(
+            "⚙️ No MT5 credentials.\n\nUse /mt5setup to connect your MT5 account.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    msg = await update.message.reply_text("📊 Fetching MT5 status...")
+    status = get_user_mt5_status(user_id)
+
+    if not status.connected:
+        await msg.edit_text(
+            f"📊 *MT5 Status*\n\n"
+            f"Account: `{profile.mt5_login}`\n"
+            f"Server: `{profile.mt5_server}`\n"
+            f"Status: ❌ Not connected\n\n"
+            f"_{status.error}_\n\n"
+            f"Use /mt5connect to reconnect.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    from app.user_mt5 import _user_traders
+    trader = _user_traders.get(user_id)
+    positions = trader.get_open_positions(SYMBOL) if trader else []
+    sym_info  = trader.get_symbol_info(SYMBOL) if trader else {}
+
+    mode_emoji = "🟡" if status.trade_mode == "DEMO" else "🔴"
+    lines = [
+        f"📊 *MT5 STATUS*",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"👤 `{status.account_login}` — {status.account_name}",
+        f"🏦 `{status.broker}`",
+        f"{mode_emoji} *{status.trade_mode}*",
+        f"💰 Balance:  `${status.balance:,.2f}`",
+        f"📈 Equity:   `${status.equity:,.2f}`",
+        f"🆓 Free:     `${status.margin_free:,.2f}`",
+        f"⚡ Leverage: `1:{status.leverage}`",
+    ]
+
+    if sym_info and "bid" in sym_info:
+        lines += [
+            f"",
+            f"💹 *{SYMBOL}*",
+            f"  Bid: `{sym_info.get('bid')}` | Ask: `{sym_info.get('ask')}`",
+            f"  Spread: `{sym_info.get('spread')} pts`",
+        ]
+
+    if positions:
+        lines += [f"", f"🔄 *Open Positions ({len(positions)})*"]
+        for p in positions:
+            pnl   = p.get("profit", 0)
+            emoji = "🟢" if pnl >= 0 else "🔴"
+            d_icon = "🟢" if p.get("direction") == "BUY" else "🔴"
+            lines.append(
+                f"  {emoji} #{p.get('ticket')} {d_icon} `{p.get('direction')}` "
+                f"{p.get('volume')} lots @ `{p.get('price_open')}` "
+                f"P&L: `${pnl:.2f}`"
+            )
+    else:
+        lines += [f"", f"_No open positions_"]
+
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+
+
+# ---------------------------------------------------------------------------
+# /mt5disconnect — disconnect and clear credentials
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_mt5disconnect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    disconnect_user_mt5(user_id)
+    profile_store.clear_mt5_credentials(user_id)
+    await update.message.reply_text(
+        "✅ MT5 disconnected and credentials cleared.\n\n"
+        "_Use /mt5setup to reconnect with new credentials._",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /mt5close <ticket> or /mt5close all
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_mt5close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args    = context.args
+
+    if not args:
+        await update.message.reply_text(
+            "Usage:\n`/mt5close 12345` — close specific ticket\n`/mt5close all` — close all",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    from app.user_mt5 import _user_traders
+    trader = _user_traders.get(user_id)
+
+    if not trader:
+        await update.message.reply_text(
+            "❌ MT5 not connected. Use /mt5connect first.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    msg = await update.message.reply_text("⏳ Closing position(s)...")
+
+    try:
+        if args[0].lower() == "all":
+            results = trader.close_all_positions(SYMBOL)
+            lines   = ["🔄 *Close All Results*"]
+            for r in results:
+                emoji = "✅" if r.success else "❌"
+                lines.append(f"  {emoji} {r.message}")
+            if not results:
+                lines.append("  No open positions.")
+            await msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        else:
+            ticket = int(args[0])
+            result = trader.close_position(ticket)
+            emoji  = "✅" if result.success else "❌"
+            await msg.edit_text(
+                f"{emoji} *Close #{ticket}*\n\n{result.message}",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+    except ValueError:
+        await msg.edit_text("❌ Invalid ticket. Use `/mt5close 12345`", parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:
+        await msg.edit_text(f"❌ Error: {exc}")
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -1721,11 +2082,28 @@ def main():
     app.add_handler(CommandHandler("mt5connect",    cmd_mt5connect))
     app.add_handler(CommandHandler("mt5status",     cmd_mt5status))
     app.add_handler(CommandHandler("mt5close",      cmd_mt5close))
+    app.add_handler(CommandHandler("mt5disconnect", cmd_mt5disconnect))
+
+    # MT5 setup conversation
+    mt5_conv = ConversationHandler(
+        entry_points=[CommandHandler("mt5setup", cmd_mt5setup)],
+        states={
+            MT5_LOGIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND, mt5_get_login)],
+            MT5_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, mt5_get_password)],
+            MT5_SERVER:   [MessageHandler(filters.TEXT & ~filters.COMMAND, mt5_get_server)],
+        },
+        fallbacks=[CommandHandler("cancel", mt5_cancel)],
+    )
+    app.add_handler(mt5_conv)
     app.add_handler(CommandHandler("memory",        cmd_memory))
     app.add_handler(CommandHandler("outcome",       cmd_outcome))
     app.add_handler(CommandHandler("addlesson",     cmd_addlesson))
     app.add_handler(CommandHandler("performance",   cmd_performance))
     app.add_handler(CommandHandler("history",       cmd_history))
+    app.add_handler(CommandHandler("setalert",      cmd_setalert))
+    app.add_handler(CommandHandler("myalerts",      cmd_myalerts))
+    app.add_handler(CommandHandler("cancelalert",   cmd_cancelalert))
+    app.add_handler(CommandHandler("cancelalerts",  cmd_cancelalerts))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
@@ -1735,6 +2113,12 @@ def main():
             scanner = SignalScanner(application, profile_store)
             asyncio.create_task(scanner.start())
             logger.info("Signal scanner started.")
+
+        # Price alert watcher
+        from app.price_alerts import PriceWatcher, get_alert_store
+        watcher = PriceWatcher(application, get_alert_store())
+        asyncio.create_task(watcher.start())
+        logger.info("Price alert watcher started.")
 
         # Morning briefing scheduler
         asyncio.create_task(_morning_briefing_scheduler(application))

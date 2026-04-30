@@ -16,6 +16,7 @@ from app.agent import TradingAgent
 from app.config import get_settings
 from app.risk import RiskManager, RiskParams
 from app.user_profile import ProfileStore, UserProfile
+from app.price_alerts import get_alert_store, build_alerts_from_smc
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -32,12 +33,13 @@ class SignalScanner:
     """
 
     def __init__(self, bot_app, profile_store: ProfileStore):
-        self.bot_app = bot_app          # telegram.ext.Application instance
+        self.bot_app       = bot_app
         self.profile_store = profile_store
-        self.agent = TradingAgent()
-        self.risk_manager = RiskManager()
-        self._running = False
-        self._last_signals: dict[str, dict] = {}   # key: "symbol_tf" → last signal
+        self.agent         = TradingAgent()
+        self.risk_manager  = RiskManager()
+        self.alert_store   = get_alert_store()
+        self._running      = False
+        self._last_signals: dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -86,6 +88,29 @@ class SignalScanner:
             action = signal.get("action", "NO_TRADE")
             if action == "NO_TRADE":
                 logger.debug("%s %s — NO_TRADE", symbol, tf)
+                # Even on NO_TRADE, set proximity alerts for key levels
+                mtf_data = signal.get("mtf_data", {})
+                if mtf_data:
+                    price_info = signal.get("current_price", {})
+                    current_price = float(price_info.get("mid", 0))
+                    if current_price:
+                        for user in subscribers:
+                            new_alerts = build_alerts_from_smc(
+                                user.user_id, symbol, tf,
+                                mtf_data, current_price,
+                            )
+                            for alert in new_alerts:
+                                # Only add if not already watching this level
+                                existing = [
+                                    a for a in self.alert_store.get_active(user.user_id)
+                                    if a.id == alert.id
+                                ]
+                                if not existing:
+                                    self.alert_store.add(alert)
+                                    logger.info(
+                                        "Alert set for user %d: %s",
+                                        user.user_id, alert.description,
+                                    )
                 continue
 
             # Deduplicate: skip if same direction signal was already sent for this TF
