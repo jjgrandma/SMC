@@ -1,0 +1,48 @@
+# ============================================================
+# NEVER commit these — secrets and sensitive data
+# ============================================================
+.env
+data/*.json
+data/user_profiles.json
+data/memory.json
+data/lessons.json
+data/journal.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Test artifacts
+test_mt5.py
+test_pips.py
+.pytest_cache/
+htmlcov/
+.coverage
+
+# OS
+Thumbs.db

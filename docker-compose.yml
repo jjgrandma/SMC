@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: forex_api
+    env_file: .env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: python run_api.py
+
+  bot:
+    build: .
+    container_name: forex_bot
+    env_file: .env
+    depends_on:
+      - api
+    restart: unless-stopped
+    command: python run_bot.py
+    environment:
+      - API_BASE_URL=http://api:8000
