@@ -493,7 +493,7 @@ If no valid setup: action = "NO_TRADE" with clear reasoning.
         return signal
 
     # ------------------------------------------------------------------
-    # Morning briefing — daily analysis sent every morning
+    # Market Briefing — time-aware, works any time of day
     # ------------------------------------------------------------------
 
     async def get_morning_briefing(
@@ -502,14 +502,13 @@ If no valid setup: action = "NO_TRADE" with clear reasoning.
         user_profile=None,
     ) -> dict[str, Any]:
         """
-        Full morning briefing:
-        - Previous day recap (D1 candle analysis)
-        - Weekly context (W1 bias)
-        - Multi-timeframe structure: W1, D1, H4, H1
-        - Key levels to watch today
-        - AI expectation for the session
-        - High-impact news today
-        - Trade plan for the day
+        Time-aware market briefing.
+        Adapts content based on current session:
+          - Asian session   (22:00–07:00 UTC): recap + London preview
+          - London session  (07:00–13:00 UTC): full day plan
+          - New York session(13:00–22:00 UTC): afternoon update + next day preview
+          - Night           (any off-hours):   overnight recap + next session plan
+        Always uses real live data.
         """
         from datetime import datetime, timezone
         from app.tools import get_market_data
@@ -519,83 +518,162 @@ If no valid setup: action = "NO_TRADE" with clear reasoning.
         news_data     = self._tool_news()
         user_cfg      = self._tool_user_settings(user_profile)
 
-        # Fetch data for all key timeframes
+        # MTF analysis
         mtf_result = self.mtf_engine.analyze(symbol, current_price)
         mtf_data   = mtf_to_dict(mtf_result)
 
-        # Get D1 candles for previous day recap
+        # Fetch D1 candles for context
         df_d1 = get_market_data(symbol, "D1")
-        prev_day = {}
-        if df_d1 is not None and len(df_d1) >= 2:
-            prev = df_d1.iloc[-2]
-            curr = df_d1.iloc[-1]
-            prev_day = {
-                "date":        str(df_d1.index[-2].date()),
-                "open":        round(float(prev["open"]), 3),
-                "high":        round(float(prev["high"]), 3),
-                "low":         round(float(prev["low"]), 3),
-                "close":       round(float(prev["close"]), 3),
-                "range":       round(float(prev["high"]) - float(prev["low"]), 3),
-                "direction":   "bullish" if prev["close"] > prev["open"] else "bearish",
-                "body_size":   round(abs(float(prev["close"]) - float(prev["open"])), 3),
-                "today_open":  round(float(curr["open"]), 3),
-            }
+        df_h4 = get_market_data(symbol, "H4")
 
-        today = datetime.now(timezone.utc)
-        session = "London" if 7 <= today.hour < 16 else "New York" if 13 <= today.hour < 22 else "Asian"
+        # Build candle context
+        prev_day = {}
+        today_candle = {}
+        recent_h4 = []
+
+        if df_d1 is not None and len(df_d1) >= 3:
+            for i, label in [(-3, "2_days_ago"), (-2, "yesterday"), (-1, "today")]:
+                c = df_d1.iloc[i]
+                data = {
+                    "date":      str(df_d1.index[i].date()),
+                    "open":      round(float(c["open"]), 3),
+                    "high":      round(float(c["high"]), 3),
+                    "low":       round(float(c["low"]), 3),
+                    "close":     round(float(c["close"]), 3),
+                    "range":     round(float(c["high"]) - float(c["low"]), 3),
+                    "direction": "bullish" if c["close"] > c["open"] else "bearish",
+                    "body":      round(abs(float(c["close"]) - float(c["open"])), 3),
+                }
+                if label == "yesterday":
+                    prev_day = data
+                elif label == "today":
+                    today_candle = data
+
+        if df_h4 is not None and len(df_h4) >= 6:
+            for i in range(-6, 0):
+                c = df_h4.iloc[i]
+                recent_h4.append({
+                    "time":      str(df_h4.index[i]),
+                    "open":      round(float(c["open"]), 3),
+                    "high":      round(float(c["high"]), 3),
+                    "low":       round(float(c["low"]), 3),
+                    "close":     round(float(c["close"]), 3),
+                    "direction": "bullish" if c["close"] > c["open"] else "bearish",
+                })
+
+        # Determine session context
+        now = datetime.now(timezone.utc)
+        hour = now.hour
+
+        if 7 <= hour < 13:
+            session_name    = "London"
+            session_context = "London session is open. High volatility expected."
+            next_session    = "New York (opens 13:00 UTC)"
+            focus           = "London open setup, liquidity grabs, OB entries"
+        elif 13 <= hour < 17:
+            session_name    = "New York"
+            session_context = "New York session is open. London/NY overlap — highest volume."
+            next_session    = "NY close then Asian (22:00 UTC)"
+            focus           = "NY continuation or reversal, news reactions"
+        elif 17 <= hour < 22:
+            session_name    = "New York Late"
+            session_context = "Late New York session. Volume declining."
+            next_session    = "Asian session (22:00 UTC)"
+            focus           = "End of day positioning, tomorrow's setup building"
+        elif 22 <= hour or hour < 2:
+            session_name    = "Asian Open"
+            session_context = "Asian session just opened. Low volatility, range-bound typical."
+            next_session    = "London (07:00 UTC)"
+            focus           = "Asian range formation, liquidity building above/below"
+        else:
+            session_name    = "Asian Mid"
+            session_context = "Mid Asian session. Consolidation phase."
+            next_session    = "London (07:00 UTC)"
+            focus           = "Watch for Asian high/low formation before London"
 
         prompt = f"""
-You are generating a MORNING BRIEFING for a professional Gold (XAUUSD) trader.
-Today is {today.strftime('%A, %B %d, %Y')} — {session} session.
+You are a professional Gold (XAUUSD) market analyst generating a REAL-TIME MARKET BRIEFING.
 
-=== TOOL: get_current_price ===
+Current time: {now.strftime('%A, %B %d, %Y — %H:%M UTC')}
+Current session: {session_name}
+Session context: {session_context}
+Next session: {next_session}
+Analysis focus: {focus}
+
+=== LIVE PRICE ===
 {json.dumps(price_info, indent=2)}
 
-=== TOOL: get_user_settings ===
+=== USER SETTINGS ===
 {json.dumps(user_cfg, indent=2)}
 
-=== TOOL: get_economic_calendar (today's events) ===
+=== ECONOMIC CALENDAR ===
 {json.dumps(news_data, indent=2)}
 
-=== PREVIOUS DAY (D1) CANDLE ===
+=== YESTERDAY'S D1 CANDLE ===
 {json.dumps(prev_day, indent=2)}
 
-=== TOOL: MTF SMC Analysis (W1→D1→H4→H1) ===
+=== TODAY'S D1 CANDLE (so far) ===
+{json.dumps(today_candle, indent=2)}
+
+=== LAST 6 H4 CANDLES (recent price action) ===
+{json.dumps(recent_h4, indent=2)}
+
+=== MULTI-TIMEFRAME SMC ANALYSIS ===
 {json.dumps(mtf_data, indent=2)}
 
-Generate a comprehensive morning briefing JSON:
+Generate a COMPREHENSIVE REAL-TIME BRIEFING as JSON.
+The briefing must be relevant to the CURRENT TIME and SESSION.
+If it is night/Asian session, focus on what happened today and what to expect tomorrow.
+If it is London/NY, focus on the current session setup.
+
 {{
-  "date": "string",
-  "session": "string",
+  "title": "string — e.g. 'London Session Briefing' or 'Asian Session Outlook'",
+  "date_time": "string",
+  "session": "{session_name}",
+  "next_session": "{next_session}",
   "current_price": float,
   "weekly_bias": "bullish" | "bearish" | "ranging",
   "daily_bias": "bullish" | "bearish" | "ranging",
   "htf_aligned": bool,
-  "previous_day_recap": "string — what happened yesterday, key moves, candle type",
-  "weekly_context": "string — where are we in the weekly range",
-  "key_levels_today": {{
+
+  "today_recap": "string — what happened in today's price action so far, key moves, candle structure",
+  "yesterday_recap": "string — what happened yesterday, was it bullish/bearish, key levels hit",
+  "weekly_context": "string — where are we in the weekly range, premium or discount",
+
+  "key_levels": {{
     "major_resistance": [float, float],
     "major_support": [float, float],
-    "daily_high": float,
-    "daily_low": float,
+    "today_high": float,
+    "today_low": float,
+    "yesterday_high": float,
+    "yesterday_low": float,
     "weekly_high": float,
     "weekly_low": float,
     "equilibrium": float
   }},
-  "active_order_blocks": "string — key OBs to watch",
-  "active_fvgs": "string — key FVGs to watch",
-  "liquidity_targets": "string — where liquidity sits above/below",
-  "premium_discount_now": "string — is price in premium, discount or EQ",
-  "session_expectation": "string — what you expect price to do today based on structure",
+
+  "active_order_blocks": "string — key OBs currently relevant",
+  "active_fvgs": "string — unfilled FVGs that price may revisit",
+  "liquidity_above": "string — where buy-side liquidity sits",
+  "liquidity_below": "string — where sell-side liquidity sits",
+  "premium_discount_now": "string — current zone with price level",
+
+  "current_session_outlook": "string — what to expect for the REST of the current session",
+  "next_session_preview": "string — what to expect in the NEXT session based on current structure",
+  "tomorrow_expectation": "string — broader expectation for tomorrow based on daily/weekly structure",
+
   "trade_plan": {{
     "bias": "BUY" | "SELL" | "WAIT",
-    "ideal_entry_zone": "string",
-    "watch_for": "string — what confirmation to look for",
-    "avoid_if": "string — conditions that cancel the plan"
+    "ideal_entry_zone": "string — specific price zone",
+    "watch_for": "string — exact confirmation needed",
+    "avoid_if": "string — what would cancel the plan",
+    "best_session_to_trade": "string — London | New York | either"
   }},
-  "news_impact": "string — how today's news events affect the plan",
-  "experience_note": "string — a professional insight based on Gold's typical behavior in this structure",
-  "risk_reminder": "string — risk management reminder for today"
+
+  "news_impact": "string — upcoming news and how it affects the plan",
+  "experience_note": "string — professional insight about Gold behavior in this specific structure/time",
+  "risk_reminder": "string — specific risk management advice for current conditions",
+  "summary": "string — 2-3 sentence executive summary a trader can act on immediately"
 }}
 """.strip()
 
@@ -603,7 +681,7 @@ Generate a comprehensive morning briefing JSON:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user",   "content": prompt},
         ]
-        briefing, ai_meta = await dual_chat_json(messages, temperature=0.3, max_tokens=1200)
+        briefing, ai_meta = await dual_chat_json(messages, temperature=0.3, max_tokens=1500)
 
         if not briefing:
             briefing = {"error": "AI failed to generate briefing."}
@@ -611,9 +689,13 @@ Generate a comprehensive morning briefing JSON:
         briefing["symbol"]       = symbol
         briefing["price_info"]   = price_info
         briefing["prev_day"]     = prev_day
+        briefing["today_candle"] = today_candle
+        briefing["recent_h4"]    = recent_h4
         briefing["mtf_data"]     = mtf_data
         briefing["ai_meta"]      = ai_meta
-        briefing["generated_at"] = today.strftime("%Y-%m-%d %H:%M UTC")
+        briefing["generated_at"] = now.strftime("%Y-%m-%d %H:%M UTC")
+        briefing["session"]      = session_name
+        briefing["next_session"] = next_session
         return briefing
 
     async def get_status(self, symbol: str, user_profile=None) -> dict[str, Any]:

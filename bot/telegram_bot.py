@@ -246,114 +246,136 @@ def _fmt_manual_signal(data: dict, user_id: int) -> str:
 
 def _fmt_briefing(data: dict) -> list[str]:
     """
-    Format morning briefing — returns list of message parts
-    (split across multiple messages if needed).
+    Format time-aware briefing — returns list of message parts.
     """
     if "error" in data:
         return [f"❌ Briefing failed: {data['error']}"]
 
-    date      = data.get("date", data.get("generated_at", "Today"))
+    title     = data.get("title", "Market Briefing")
+    gen_at    = data.get("generated_at", "")
     session   = data.get("session", "")
+    next_sess = data.get("next_session", "")
     price     = data.get("price_info", {}).get("mid", "N/A")
     w_bias    = data.get("weekly_bias", "N/A").upper()
     d_bias    = data.get("daily_bias", "N/A").upper()
     aligned   = data.get("htf_aligned", False)
-    align_str = "✅ ALIGNED" if aligned else "⚠️ NOT ALIGNED"
+    symbol    = data.get("symbol", "XAUUSD")
+
     w_emoji   = "🟢" if w_bias == "BULLISH" else "🔴" if w_bias == "BEARISH" else "⚪"
     d_emoji   = "🟢" if d_bias == "BULLISH" else "🔴" if d_bias == "BEARISH" else "⚪"
+    align_str = "✅ Aligned" if aligned else "⚠️ Not Aligned"
 
-    kl        = data.get("key_levels_today", {})
+    kl        = data.get("key_levels", {})
     plan      = data.get("trade_plan", {})
     plan_bias = plan.get("bias", "WAIT")
     pb_emoji  = "🟢" if plan_bias == "BUY" else "🔴" if plan_bias == "SELL" else "⏸"
-
     prev      = data.get("prev_day", {})
+    today_c   = data.get("today_candle", {})
+    summary   = data.get("summary", "")
 
-    # Part 1 — Header + bias + previous day
+    # Part 1 — Header + bias + recaps
     part1 = [
-        f"🌅 *MORNING BRIEFING — {data.get('symbol','XAUUSD')}*",
-        f"📅 {date}  |  🕐 {session} Session",
+        f"🌅 *{title}*",
+        f"🕐 `{gen_at}`",
         f"━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"💰 Current Price: `{price}`",
+        f"💰 `{price}` _{data.get('price_info',{}).get('source','')}_",
+        f"📍 Session: *{session}* → Next: _{next_sess}_",
         f"",
-        f"📊 *HTF Bias*",
+        f"*HTF Bias*",
         f"  {w_emoji} Weekly: *{w_bias}*",
         f"  {d_emoji} Daily:  *{d_bias}*",
-        f"  Alignment: {align_str}",
-        f"",
-        f"📅 *Yesterday's Recap*",
-        f"_{data.get('previous_day_recap', 'N/A')}_",
+        f"  {align_str}",
     ]
+
+    if summary:
+        part1 += ["", f"*Summary*", f"_{summary}_"]
+
     if prev:
-        dir_emoji = "🟢" if prev.get("direction") == "bullish" else "🔴"
+        dir_e = "🟢" if prev.get("direction") == "bullish" else "🔴"
         part1 += [
-            f"",
-            f"  {dir_emoji} {prev.get('date','')} | "
-            f"O:`{prev.get('open')}` H:`{prev.get('high')}` "
-            f"L:`{prev.get('low')}` C:`{prev.get('close')}`",
-            f"  Range: `{prev.get('range')}` pts | "
-            f"Body: `{prev.get('body_size')}` pts",
+            "",
+            f"*Yesterday* {dir_e}",
+            f"  `{prev.get('date','')}` O:`{prev.get('open')}` H:`{prev.get('high')}` L:`{prev.get('low')}` C:`{prev.get('close')}`",
+            f"  Range: `{prev.get('range')}` pts | Body: `{prev.get('body')}` pts",
+            f"  _{data.get('yesterday_recap','')}_",
+        ]
+
+    if today_c:
+        dir_e = "🟢" if today_c.get("direction") == "bullish" else "🔴"
+        part1 += [
+            "",
+            f"*Today So Far* {dir_e}",
+            f"  O:`{today_c.get('open')}` H:`{today_c.get('high')}` L:`{today_c.get('low')}` C:`{today_c.get('close')}`",
+            f"  _{data.get('today_recap','')}_",
         ]
 
     # Part 2 — Key levels + structure
-    part2 = [
-        f"📐 *Key Levels Today*",
-    ]
+    part2 = [f"*Key Levels*"]
     if kl:
         res = kl.get("major_resistance", [])
         sup = kl.get("major_support", [])
         if res:
-            part2.append(f"  🔴 Resistance: " + " | ".join([f"`{r}`" for r in res]))
+            part2.append("  🔴 Resistance: " + " | ".join([f"`{r}`" for r in res if r]))
         if sup:
-            part2.append(f"  🟢 Support:    " + " | ".join([f"`{s}`" for s in sup]))
+            part2.append("  🟢 Support:    " + " | ".join([f"`{s}`" for s in sup if s]))
         for k, label in [
-            ("daily_high","D High"), ("daily_low","D Low"),
-            ("weekly_high","W High"), ("weekly_low","W Low"),
+            ("today_high","Today H"), ("today_low","Today L"),
+            ("yesterday_high","Yest H"), ("yesterday_low","Yest L"),
+            ("weekly_high","Week H"), ("weekly_low","Week L"),
             ("equilibrium","EQ 50%"),
         ]:
             if kl.get(k):
                 part2.append(f"  {label}: `{kl[k]}`")
 
     part2 += [
-        f"",
-        f"📦 *Active Order Blocks*",
-        f"_{data.get('active_order_blocks', 'N/A')}_",
-        f"",
-        f"🕳 *Active FVGs*",
-        f"_{data.get('active_fvgs', 'N/A')}_",
-        f"",
-        f"💧 *Liquidity Targets*",
-        f"_{data.get('liquidity_targets', 'N/A')}_",
-        f"",
-        f"⚖️ *Premium/Discount Now*",
-        f"_{data.get('premium_discount_now', 'N/A')}_",
+        "",
+        f"*Order Blocks*",
+        f"_{data.get('active_order_blocks','N/A')}_",
+        "",
+        f"*Fair Value Gaps*",
+        f"_{data.get('active_fvgs','N/A')}_",
+        "",
+        f"*Liquidity Above*",
+        f"_{data.get('liquidity_above','N/A')}_",
+        "",
+        f"*Liquidity Below*",
+        f"_{data.get('liquidity_below','N/A')}_",
+        "",
+        f"*Current Zone*",
+        f"_{data.get('premium_discount_now','N/A')}_",
     ]
 
-    # Part 3 — Expectation + trade plan
+    # Part 3 — Outlook + trade plan
     part3 = [
-        f"🔮 *Session Expectation*",
-        f"_{data.get('session_expectation', 'N/A')}_",
-        f"",
-        f"📋 *Today's Trade Plan*",
+        f"*{session} Outlook*",
+        f"_{data.get('current_session_outlook','N/A')}_",
+        "",
+        f"*{next_sess} Preview*",
+        f"_{data.get('next_session_preview','N/A')}_",
+        "",
+        f"*Tomorrow's Expectation*",
+        f"_{data.get('tomorrow_expectation','N/A')}_",
+        "",
+        f"*Trade Plan*",
         f"  {pb_emoji} Bias: *{plan_bias}*",
-        f"  🎯 Ideal Entry Zone: _{plan.get('ideal_entry_zone','N/A')}_",
+        f"  🎯 Entry Zone: _{plan.get('ideal_entry_zone','N/A')}_",
         f"  ⏳ Watch For: _{plan.get('watch_for','N/A')}_",
         f"  🚫 Avoid If: _{plan.get('avoid_if','N/A')}_",
-        f"",
-        f"📰 *News Impact Today*",
-        f"_{data.get('news_impact', 'N/A')}_",
-        f"",
-        f"🧠 *Experience Note*",
-        f"_{data.get('experience_note', 'N/A')}_",
-        f"",
-        f"⚠️ *Risk Reminder*",
-        f"_{data.get('risk_reminder', 'N/A')}_",
-        f"",
+        f"  ⏰ Best Session: _{plan.get('best_session_to_trade','N/A')}_",
+        "",
+        f"*News Impact*",
+        f"_{data.get('news_impact','N/A')}_",
+        "",
+        f"*Experience Note*",
+        f"_{data.get('experience_note','N/A')}_",
+        "",
+        f"*Risk Reminder*",
+        f"_{data.get('risk_reminder','N/A')}_",
+        "",
         f"━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"_Generated at {data.get('generated_at','')}_",
+        f"_Generated: {gen_at}_",
     ]
 
-    # Return as separate messages to avoid Telegram 4096 char limit
     messages = []
     for part in [part1, part2, part3]:
         text = "\n".join(part)
