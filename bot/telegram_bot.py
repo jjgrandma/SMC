@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 profile_store = get_profile_store()
 
-API_BASE = settings.api_base_url
+API_BASE = settings.effective_api_base_url
 SYMBOL = settings.symbol
 
 VALID_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1"}
@@ -104,10 +104,20 @@ def restricted(func):
 # ---------------------------------------------------------------------------
 
 async def _post(endpoint: str, payload: dict) -> dict:
+    import os
+    # Always resolve the URL at call time — not at import time
+    port = os.environ.get("PORT") or os.environ.get("API_PORT", "8000")
+    base = f"http://localhost:{port}"
     async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{API_BASE}{endpoint}", json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = await client.post(f"{base}{endpoint}", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.ConnectError:
+            raise RuntimeError(
+                f"Cannot connect to API at {base}{endpoint}. "
+                "Make sure run_api.py is running."
+            )
 
 
 # ---------------------------------------------------------------------------

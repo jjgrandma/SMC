@@ -28,6 +28,18 @@ class Settings(BaseSettings):
     api_port: int = Field(8000, env="API_PORT")
     api_base_url: str = Field("http://localhost:8000", env="API_BASE_URL")
 
+    @property
+    def effective_api_base_url(self) -> str:
+        """
+        Returns the correct API base URL.
+        Checks PORT env var at runtime (Railway sets this dynamically).
+        """
+        import os
+        port = os.environ.get("PORT") or os.environ.get("API_PORT")
+        if port:
+            return f"http://localhost:{port}"
+        return self.api_base_url
+
     # MetaTrader 5
     mt5_enabled: bool = Field(False, env="MT5_ENABLED")
     mt5_login: int = Field(0, env="MT5_LOGIN")
