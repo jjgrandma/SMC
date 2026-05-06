@@ -2132,6 +2132,60 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Chart error: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# /storage — show data storage status
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_storage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app.persistence import get_storage_info
+    from app.journal import get_journal
+    from app.memory import get_memory
+    from app.user_profile import get_profile_store
+
+    info    = get_storage_info()
+    journal = get_journal()
+    memory  = get_memory()
+    store   = get_profile_store()
+
+    stats   = journal.get_stats()
+    m_stats = memory.get_stats()
+
+    lines = [
+        f"💾 *DATA STORAGE STATUS*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📁 Data dir: `{info['data_dir']}`",
+        f"🗂 Railway Volume: `{info['railway_volume']}`",
+        f"",
+        f"*Files on disk:*",
+    ]
+
+    if info["files"]:
+        for fname, size in info["files"].items():
+            lines.append(f"  📄 `{fname}` — {size}")
+    else:
+        lines.append("  ⚠️ No data files found!")
+
+    lines += [
+        f"",
+        f"*Data summary:*",
+        f"  📊 Trade history: `{stats.total}` signals",
+        f"  🧠 Memory lessons: `{m_stats.total_lessons}`",
+        f"  👥 User profiles: `{len(store._profiles)}`",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"⚠️ *Railway resets disk on every redeploy.*",
+        f"_Add a Railway Volume mounted at `/app/data` to persist data._",
+        f"_Or run locally on your PC for permanent storage._",
+    ]
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=back_kb(),
+    )
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -2239,6 +2293,7 @@ def main():
     app.add_handler(CommandHandler("cancelalert",   cmd_cancelalert))
     app.add_handler(CommandHandler("cancelalerts",  cmd_cancelalerts))
     app.add_handler(CommandHandler("chart",         cmd_chart))
+    app.add_handler(CommandHandler("storage",       cmd_storage))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
