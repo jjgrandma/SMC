@@ -2200,6 +2200,125 @@ async def cmd_storage(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ---------------------------------------------------------------------------
+# /backup — export all data as a file
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    import json, io, zipfile
+    from pathlib import Path
+
+    msg = await update.message.reply_text("📦 Creating backup...")
+
+    try:
+        data_dir = Path("data")
+        buf      = io.BytesIO()
+
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in data_dir.glob("*.json"):
+                zf.write(f, f.name)
+
+        buf.seek(0)
+        size = len(buf.getvalue()) // 1024
+
+        from datetime import datetime, timezone
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+
+        await msg.delete()
+        await update.message.reply_document(
+            document=buf,
+            filename=f"smc_backup_{ts}.zip",
+            caption=(
+                f"📦 *Data Backup*\n"
+                f"Size: `{size} KB`\n"
+                f"Date: `{ts} UTC`\n\n"
+                f"_Save this file. Use /restore to reimport after a redeploy._"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as exc:
+        await msg.edit_text(f"❌ Backup failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# /restore — restore data from a backup zip file
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.document:
+        await update.message.reply_text(
+            "📥 *Restore Data*\n\n"
+            "Send your backup zip file as a document with the command `/restore`\n\n"
+            "_Or attach the file and type /restore in the caption._",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    msg = await update.message.reply_text("📥 Restoring backup...")
+
+    try:
+        import io, zipfile
+        from pathlib import Path
+
+        # Download the file
+        file = await update.message.document.get_file()
+        buf  = io.BytesIO()
+        await file.download_to_memory(buf)
+        buf.seek(0)
+
+        data_dir = Path("data")
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        restored = []
+        with zipfile.ZipFile(buf, "r") as zf:
+            for name in zf.namelist():
+                if name.endswith(".json"):
+                    zf.extract(name, data_dir)
+                    restored.append(name)
+
+        # Reload all stores from restored files
+        from app.journal import get_journal
+        from app.memory import get_memory
+        from app.user_profile import get_profile_store
+        from app.price_alerts import get_alert_store
+
+        # Force reload by clearing singletons
+        import app.journal as _j
+        import app.memory as _m
+        import app.user_profile as _u
+        import app.price_alerts as _a
+
+        _j._journal = None
+        _m._memory  = None
+        _u._store   = None
+        _a._store   = None
+
+        # Reload
+        journal = get_journal()
+        memory  = get_memory()
+        store   = get_profile_store()
+        alerts  = get_alert_store()
+
+        stats   = journal.get_stats()
+        m_stats = memory.get_stats()
+
+        await msg.edit_text(
+            f"✅ *Backup Restored*\n\n"
+            f"Files restored: `{len(restored)}`\n"
+            f"{''.join(chr(10) + '  📄 ' + f for f in restored)}\n\n"
+            f"📊 Trade history: `{stats.total}` signals\n"
+            f"🧠 Memory lessons: `{m_stats.total_lessons}`\n"
+            f"👥 User profiles: `{len(store._profiles)}`\n"
+            f"🔔 Alerts: `{len(alerts.get_active())}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    except Exception as exc:
+        await msg.edit_text(f"❌ Restore failed: `{exc}`", parse_mode=ParseMode.MARKDOWN)
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -2256,6 +2375,64 @@ async def _morning_briefing_scheduler(app: Application):
 
 
 # ---------------------------------------------------------------------------
+# Auto-backup on startup
+# ---------------------------------------------------------------------------
+
+async def _auto_backup_on_start(app: Application):
+    """
+    On every bot startup, send a backup zip to all admin users.
+    This ensures you always have the latest data even after a redeploy.
+    """
+    import io, zipfile
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    await asyncio.sleep(10)   # wait for bot to fully start
+
+    data_dir = Path("data")
+    if not data_dir.exists():
+        return
+
+    json_files = list(data_dir.glob("*.json"))
+    if not json_files:
+        logger.info("Auto-backup: no data files to backup")
+        return
+
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in json_files:
+                zf.write(f, f.name)
+        buf.seek(0)
+        size = len(buf.getvalue()) // 1024
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+
+        # Send to all allowed users
+        for user_id in settings.allowed_user_ids:
+            try:
+                buf.seek(0)
+                await app.bot.send_document(
+                    chat_id=user_id,
+                    document=buf,
+                    filename=f"smc_autobackup_{ts}.zip",
+                    caption=(
+                        f"🔄 *Auto-Backup on Startup*\n"
+                        f"`{ts} UTC`  •  `{size} KB`  •  `{len(json_files)} files`\n\n"
+                        f"_Bot restarted. Your data is attached._\n"
+                        f"_Use /restore if data was lost._"
+                    ),
+                    parse_mode="Markdown",
+                )
+                logger.info("Auto-backup sent to user %d", user_id)
+            except Exception as exc:
+                logger.error("Auto-backup failed for user %d: %s", user_id, exc)
+
+    except Exception as exc:
+        logger.error("Auto-backup creation failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -2308,6 +2485,8 @@ def main():
     app.add_handler(CommandHandler("cancelalerts",  cmd_cancelalerts))
     app.add_handler(CommandHandler("chart",         cmd_chart))
     app.add_handler(CommandHandler("storage",       cmd_storage))
+    app.add_handler(CommandHandler("backup",        cmd_backup))
+    app.add_handler(CommandHandler("restore",       cmd_restore))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
@@ -2327,6 +2506,9 @@ def main():
         # Morning briefing scheduler
         asyncio.create_task(_morning_briefing_scheduler(application))
         logger.info("Morning briefing scheduler started.")
+
+        # Auto-backup on startup — sends data to all admin users
+        asyncio.create_task(_auto_backup_on_start(application))
 
     app.post_init = post_init
 
