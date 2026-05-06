@@ -983,30 +983,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
         )
         try:
-            import io, sys, os
-            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            from xauusd_analysis import (
-                fetch_data, add_indicators, fibonacci_levels,
-                detect_order_blocks, detect_liquidity_grabs,
-                generate_signals, build_chart, get_live_price,
-            )
-            df      = fetch_data(SYMBOL, tf, 100, use_mt5=False)
-            df      = add_indicators(df)
-            fib     = fibonacci_levels(df)
-            obs     = detect_order_blocks(df)
-            grabs   = detect_liquidity_grabs(df)
-            price   = get_live_price(SYMBOL)
-            signals = generate_signals(df, fib, obs, grabs)
-            df_str  = df.copy()
-            df_str.index = df_str.index.astype(str)
-            fig = build_chart(df_str, SYMBOL, tf, fib, obs, grabs, signals, price)
-            img_bytes = fig.to_image(format="png", width=1400, height=900, scale=1.5)
-            buf = io.BytesIO(img_bytes)
-            buf.seek(0)
+            import io, os
+            os.environ.setdefault("MPLBACKEND", "Agg")
+            from app.tools import get_market_data, get_current_price
+            from app.chart import chart_mtf
+            from app.smc_adapter import SMCEngineAdapter
+            from app.smc_engine import analysis_to_dict
+
+            df    = get_market_data(SYMBOL, tf)
+            df_h4 = get_market_data(SYMBOL, "H4")
+            df_d1 = get_market_data(SYMBOL, "D1")
+            price = get_current_price(SYMBOL)
+            mid   = price.get("mid", 0)
+
+            engine = SMCEngineAdapter()
+            result = engine.analyze(df)
+            smc    = analysis_to_dict(result)
+
+            buf = chart_mtf(df_d1, df_h4, df, SYMBOL, mid)
+
+            trend_emoji = "🟢" if result.trend == "bullish" else "🔴" if result.trend == "bearish" else "⚪"
             caption = (
-                f"📊 *{SYMBOL} {tf}*  💰 `{price.get('mid',0):.2f}`\n"
-                f"OB: `{len(obs)}`  Grabs: `{len(grabs)}`  "
-                f"Signals: `{len(signals)}`"
+                f"📊 *{SYMBOL} {tf}*  "
+                f"{trend_emoji} *{result.trend.upper()}*  "
+                f"💰 `{mid:.2f}`"
             )
             await query.message.reply_photo(
                 photo=buf, caption=caption,
@@ -2056,59 +2056,74 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tf      = args[0].upper() if args and args[0].upper() in VALID_TIMEFRAMES else profile.timeframe
 
     msg = await update.message.reply_text(
-        f"📊 Generating {SYMBOL} `{tf}` chart...\n_SMC + Fibonacci + RSI + MACD_",
+        f"📊 Generating {SYMBOL} `{tf}` chart...",
         parse_mode=ParseMode.MARKDOWN,
     )
 
     try:
         import io
-        import sys
         import os
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        os.environ.setdefault("MPLBACKEND", "Agg")
 
-        from xauusd_analysis import (
-            fetch_data, add_indicators, fibonacci_levels,
-            detect_order_blocks, detect_liquidity_grabs,
-            generate_signals, build_chart, get_live_price,
-        )
+        from app.tools import get_market_data, get_current_price
+        from app.chart import chart_signal, chart_mtf
+        from app.smc_adapter import SMCEngineAdapter
+        from app.smc_engine import analysis_to_dict
 
-        # Fetch and analyze
-        df      = fetch_data(SYMBOL, tf, 100, use_mt5=False)
-        df      = add_indicators(df)
-        fib     = fibonacci_levels(df)
-        obs     = detect_order_blocks(df)
-        grabs   = detect_liquidity_grabs(df)
-        price   = get_live_price(SYMBOL)
-        signals = generate_signals(df, fib, obs, grabs)
+        # Fetch live data
+        df      = get_market_data(SYMBOL, tf)
+        df_h4   = get_market_data(SYMBOL, "H4")
+        df_d1   = get_market_data(SYMBOL, "D1")
+        price   = get_current_price(SYMBOL)
+        mid     = price.get("mid", 0)
 
-        # Build chart
-        fig = build_chart(df, SYMBOL, tf, fib, obs, grabs, signals, price)
+        # SMC analysis for overlay data
+        engine  = SMCEngineAdapter()
+        result  = engine.analyze(df)
+        smc     = analysis_to_dict(result)
 
-        # Convert to PNG in memory — no file saved
-        df_str = df.copy()
-        df_str.index = df_str.index.astype(str)
-        fig2 = build_chart(df_str, SYMBOL, tf, fib, obs, grabs, signals, price)
-        img_bytes = fig2.to_image(format="png", width=1400, height=900, scale=1.5)
-        buf = io.BytesIO(img_bytes)
-        buf.seek(0)
+        # Add Fibonacci levels using matplotlib
+        import numpy as np
+        recent  = df.tail(50)
+        hi      = float(recent["high"].max())
+        lo      = float(recent["low"].min())
+        diff    = hi - lo
+        fib_levels = {
+            "0.236": hi - 0.236 * diff,
+            "0.382": hi - 0.382 * diff,
+            "0.500": hi - 0.500 * diff,
+            "0.618": hi - 0.618 * diff,
+            "0.786": hi - 0.786 * diff,
+        }
 
-        # Build caption
-        sig_lines = ""
-        for s in signals[:3]:
-            icon = "🟢" if s["type"] == "BUY" else "🔴"
-            sig_lines += f"\n{icon} {s['type']} @ `{s['price']:.2f}` [{s['confidence']}] — _{s['reason']}_"
+        # Build signal dict for chart overlay
+        last_bos = smc.get("last_bos") or {}
+        obs      = smc.get("order_blocks", [])
+        fvgs     = smc.get("fvg", [])
+
+        # Use the existing chart_mtf for multi-timeframe view
+        buf = chart_mtf(df_d1, df_h4, df, SYMBOL, mid)
+
+        # Build caption with key levels
+        trend       = result.trend
+        trend_emoji = "🟢" if trend == "bullish" else "🔴" if trend == "bearish" else "⚪"
+        bos_dir     = last_bos.get("direction", "N/A").upper() if last_bos else "N/A"
+        active_obs  = len([o for o in obs if not o.get("mitigated")])
+        active_fvgs = len([f for f in fvgs if not f.get("filled")])
+
+        fib_str = "  ".join([f"`{k}:{v:.1f}`" for k, v in list(fib_levels.items())[:3]])
 
         caption = (
-            f"📊 *{SYMBOL} {tf} — SMC Analysis*\n"
+            f"📊 *{SYMBOL} {tf} — SMC Chart*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Price: `{price.get('mid',0):.2f}` _{price.get('source','')}_\n"
-            f"📦 Order Blocks: `{len(obs)}`\n"
-            f"💧 Liq Grabs: `{len(grabs)}`\n"
-            f"📐 Fib 0.618: `{fib.get('0.618',0):.2f}`\n"
-            f"📐 Fib 0.382: `{fib.get('0.382',0):.2f}`"
+            f"💰 Price: `{mid:.2f}` _{price.get('source','')}_\n"
+            f"{trend_emoji} Trend: *{trend.upper()}*\n"
+            f"� Last BOS: `{bos_dir}`\n"
+            f"� Active OBs: `{active_obs}`\n"
+            f"� Active FVGs: `{active_fvgs}`\n\n"
+            f"*Fibonacci Levels*\n"
+            f"{fib_str}"
         )
-        if sig_lines:
-            caption += f"\n\n⚡ *Signals*{sig_lines}"
 
         await msg.delete()
         await update.message.reply_photo(
@@ -2117,19 +2132,18 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=back_kb([
                 [(f"🔄 Refresh {tf}", f"chart_{tf}"),
-                 (f"📊 H4 Chart",     "chart_H4")],
+                 ("📊 H4", "chart_H4"),
+                 ("📊 H1", "chart_H1")],
             ]),
         )
 
-    except ImportError:
-        await msg.edit_text(
-            "❌ Chart library not available.\n"
-            "Run: `pip install plotly kaleido ta`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
     except Exception as exc:
         logger.exception("Error in /chart")
-        await msg.edit_text(f"❌ Chart error: {exc}")
+        await msg.edit_text(
+            f"❌ Chart error: `{exc}`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb(),
+        )
 
 
 # ---------------------------------------------------------------------------
