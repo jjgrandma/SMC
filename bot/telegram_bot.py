@@ -78,6 +78,8 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("⚡ Signal H4",   callback_data="signal_H4")],
         [InlineKeyboardButton("📋 Trade Card",  callback_data="trade_H1"),
          InlineKeyboardButton("📈 Swing",       callback_data="swing")],
+        [InlineKeyboardButton("📉 Chart H1",    callback_data="chart_H1"),
+         InlineKeyboardButton("📉 Chart H4",    callback_data="chart_H4")],
         [InlineKeyboardButton("🌅 Briefing",    callback_data="briefing"),
          InlineKeyboardButton("📋 Status",      callback_data="status")],
         [InlineKeyboardButton("📉 Performance", callback_data="performance"),
@@ -973,6 +975,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
         except Exception as exc:
             await query.edit_message_text(f"Error: {exc}", reply_markup=_back_keyboard())
+
+    elif data.startswith("chart_"):
+        tf = data.split("_")[1]
+        await query.edit_message_text(
+            f"📊 Generating {SYMBOL} `{tf}` chart...",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        try:
+            import io, sys, os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from xauusd_analysis import (
+                fetch_data, add_indicators, fibonacci_levels,
+                detect_order_blocks, detect_liquidity_grabs,
+                generate_signals, build_chart, get_live_price,
+            )
+            df      = fetch_data(SYMBOL, tf, 100, use_mt5=False)
+            df      = add_indicators(df)
+            fib     = fibonacci_levels(df)
+            obs     = detect_order_blocks(df)
+            grabs   = detect_liquidity_grabs(df)
+            price   = get_live_price(SYMBOL)
+            signals = generate_signals(df, fib, obs, grabs)
+            df_str  = df.copy()
+            df_str.index = df_str.index.astype(str)
+            fig = build_chart(df_str, SYMBOL, tf, fib, obs, grabs, signals, price)
+            img_bytes = fig.to_image(format="png", width=1400, height=900, scale=1.5)
+            buf = io.BytesIO(img_bytes)
+            buf.seek(0)
+            caption = (
+                f"📊 *{SYMBOL} {tf}*  💰 `{price.get('mid',0):.2f}`\n"
+                f"OB: `{len(obs)}`  Grabs: `{len(grabs)}`  "
+                f"Signals: `{len(signals)}`"
+            )
+            await query.message.reply_photo(
+                photo=buf, caption=caption,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=back_kb([
+                    [("🔄 Refresh", f"chart_{tf}"),
+                     ("📊 H4", "chart_H4"), ("📊 H1", "chart_H1")],
+                ]),
+            )
+            await query.delete_message()
+        except Exception as exc:
+            await query.edit_message_text(f"❌ Chart error: {exc}", reply_markup=back_kb())
 
     elif data == "toggle_alerts":
         profile = profile_store.get(user_id)
@@ -1998,6 +2044,94 @@ async def cmd_mt5close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Error: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# /chart [TF] — generate SMC + Fibonacci + RSI chart and send to Telegram
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    profile = profile_store.get(user_id)
+    args    = context.args
+    tf      = args[0].upper() if args and args[0].upper() in VALID_TIMEFRAMES else profile.timeframe
+
+    msg = await update.message.reply_text(
+        f"📊 Generating {SYMBOL} `{tf}` chart...\n_SMC + Fibonacci + RSI + MACD_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    try:
+        import io
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        from xauusd_analysis import (
+            fetch_data, add_indicators, fibonacci_levels,
+            detect_order_blocks, detect_liquidity_grabs,
+            generate_signals, build_chart, get_live_price,
+        )
+
+        # Fetch and analyze
+        df      = fetch_data(SYMBOL, tf, 100, use_mt5=False)
+        df      = add_indicators(df)
+        fib     = fibonacci_levels(df)
+        obs     = detect_order_blocks(df)
+        grabs   = detect_liquidity_grabs(df)
+        price   = get_live_price(SYMBOL)
+        signals = generate_signals(df, fib, obs, grabs)
+
+        # Build chart
+        fig = build_chart(df, SYMBOL, tf, fib, obs, grabs, signals, price)
+
+        # Convert to PNG in memory — no file saved
+        df_str = df.copy()
+        df_str.index = df_str.index.astype(str)
+        fig2 = build_chart(df_str, SYMBOL, tf, fib, obs, grabs, signals, price)
+        img_bytes = fig2.to_image(format="png", width=1400, height=900, scale=1.5)
+        buf = io.BytesIO(img_bytes)
+        buf.seek(0)
+
+        # Build caption
+        sig_lines = ""
+        for s in signals[:3]:
+            icon = "🟢" if s["type"] == "BUY" else "🔴"
+            sig_lines += f"\n{icon} {s['type']} @ `{s['price']:.2f}` [{s['confidence']}] — _{s['reason']}_"
+
+        caption = (
+            f"📊 *{SYMBOL} {tf} — SMC Analysis*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Price: `{price.get('mid',0):.2f}` _{price.get('source','')}_\n"
+            f"📦 Order Blocks: `{len(obs)}`\n"
+            f"💧 Liq Grabs: `{len(grabs)}`\n"
+            f"📐 Fib 0.618: `{fib.get('0.618',0):.2f}`\n"
+            f"📐 Fib 0.382: `{fib.get('0.382',0):.2f}`"
+        )
+        if sig_lines:
+            caption += f"\n\n⚡ *Signals*{sig_lines}"
+
+        await msg.delete()
+        await update.message.reply_photo(
+            photo=buf,
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=back_kb([
+                [(f"🔄 Refresh {tf}", f"chart_{tf}"),
+                 (f"📊 H4 Chart",     "chart_H4")],
+            ]),
+        )
+
+    except ImportError:
+        await msg.edit_text(
+            "❌ Chart library not available.\n"
+            "Run: `pip install plotly kaleido ta`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as exc:
+        logger.exception("Error in /chart")
+        await msg.edit_text(f"❌ Chart error: {exc}")
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -2104,6 +2238,7 @@ def main():
     app.add_handler(CommandHandler("myalerts",      cmd_myalerts))
     app.add_handler(CommandHandler("cancelalert",   cmd_cancelalert))
     app.add_handler(CommandHandler("cancelalerts",  cmd_cancelalerts))
+    app.add_handler(CommandHandler("chart",         cmd_chart))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
