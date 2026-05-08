@@ -33,7 +33,7 @@ from app.user_profile import get_profile_store
 from app.price_alerts import get_alert_store, PriceAlert, PriceWatcher
 from app.user_mt5 import connect_user_mt5, disconnect_user_mt5, get_user_mt5_status
 from bot.ui import (
-    Icon, DIV, DIV2, fmt_loading, fmt_error, fmt_no_trade,
+    Icon, DIV, DIV2, fmt_loading, fmt_error, fmt_no_trade, fmt_no_trade_explained,
     fmt_signal, fmt_analysis, fmt_performance, fmt_profile,
     fmt_status, fmt_history, fmt_main_menu,
     main_menu_kb, back_kb, signal_action_kb, analysis_action_kb, kb,
@@ -755,7 +755,11 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         data = await _post("/signal", {"symbol": SYMBOL, "timeframe": tf, "execute": False})
         if data.get("action") == "NO_TRADE":
-            text = fmt_no_trade(data.get("reasoning","No setup"), data.get("news_blocked", False))
+            # Use rich explanation if available, simple if not
+            if data.get("missing_confluences"):
+                text = fmt_no_trade_explained(data)
+            else:
+                text = fmt_no_trade(data.get("reasoning","No setup"), data.get("news_blocked", False))
             await msg.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
         else:
             rm = RiskManager()
@@ -862,7 +866,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = await _post("/signal", {"symbol": SYMBOL, "timeframe": tf, "execute": False})
             profile = profile_store.get(user_id)
             if result.get("action") == "NO_TRADE":
-                text = fmt_no_trade(result.get("reasoning","No setup"), result.get("news_blocked", False))
+                if result.get("missing_confluences"):
+                    text = fmt_no_trade_explained(result)
+                else:
+                    text = fmt_no_trade(result.get("reasoning","No setup"), result.get("news_blocked", False))
                 await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
             else:
                 rm = RiskManager()
@@ -1140,8 +1147,9 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for l in lessons:
         cat_emoji = "✅" if "WIN" in l.category else "❌" if "LOSS" in l.category else "📝"
+        imp_emoji = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "⚪"}.get(l.importance, "")
         lines.append(
-            f"  {cat_emoji} [{l.occurrences}x] _{l.title}_"
+            f"  {cat_emoji} {imp_emoji} [{l.times_used}x] score:`{l.usage_score:.0f}` _{l.title}_"
         )
 
     lines += [

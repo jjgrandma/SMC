@@ -222,6 +222,54 @@ def fmt_no_trade(reason: str, news_blocked: bool = False) -> str:
     return "\n".join(lines)
 
 
+def fmt_no_trade_explained(data: dict) -> str:
+    """Rich NO-TRADE explanation showing exactly what's missing."""
+    reason    = data.get("reasoning", "No valid setup.")
+    missing   = data.get("missing_confluences", [])
+    present   = data.get("present_confluences", [])
+    score     = data.get("setup_score", 0)
+    htf       = data.get("htf_status", "")
+    session   = data.get("session_status", "")
+    rec       = data.get("recommendation", "")
+    news      = data.get("news_blocked", False)
+
+    # Score bar
+    score_bar = bar_blocks(score)
+    score_color = "🟢" if score >= 70 else "🟡" if score >= 40 else "🔴"
+
+    lines = [
+        f"{Icon.NEUTRAL} *NO TRADE — {data.get('symbol','')} `{data.get('timeframe','')}`*",
+        DIV,
+        f"_{reason}_",
+        f"",
+        f"{score_color} Setup Score: `{score}/100`  `{score_bar}`",
+    ]
+
+    if htf:
+        lines += [f"", f"*HTF Status*", f"  {htf}"]
+    if session:
+        lines += [f"*Session*", f"  {session}"]
+
+    if missing:
+        lines += [f"", f"*Missing Confluences*"]
+        for m in missing:
+            lines.append(f"  ✘ _{m}_")
+
+    if present:
+        lines += [f"", f"*Present Confluences*"]
+        for p in present:
+            lines.append(f"  ✔ _{p}_")
+
+    if rec:
+        lines += [f"", f"*Recommendation*", f"_{rec}_"]
+
+    if news:
+        lines += [f"", f"{Icon.WARN} _High-impact news window active_"]
+
+    lines += [f"", DIV]
+    return "\n".join(lines)
+
+
 def fmt_signal(data: dict, risk_result=None, profile=None) -> str:
     action     = data.get("action", "N/A")
     symbol     = data.get("symbol", "XAUUSD")

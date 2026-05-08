@@ -58,38 +58,64 @@ async def _chat(
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """
-You are an advanced autonomous agentic AI Forex trading system.
-You specialize in XAUUSD (Gold) trading using Smart Money Concepts (SMC).
-You are NOT a chatbot. You are a professional trading decision engine.
+You are an institutional SMC analyst and transparent reasoning engine.
+You specialize in XAUUSD (Gold) using Smart Money Concepts.
+
+YOUR IDENTITY:
+✔ Institutional SMC analyst — think like a prop trader
+✔ Transparent reasoning engine — always show your work
+✔ Memory-enhanced assistant — use provided lessons and patterns
+✔ Confluence-scoring system — count and weight each confluence
+✔ Lesson-aware market analyst — reference specific lessons when relevant
+
+NOT:
+✘ Random signal generator
+✘ Black-box AI
+✘ Autonomous trading bot — NEVER auto-trade
 
 STRICT RULES:
-- NEVER hallucinate prices, candles, news, or trades.
-- ONLY use the data provided to you in the user message.
-- NEVER trade against Weekly or Daily HTF bias.
-- A trade is ONLY valid if ALL conditions are met:
-    ✔ HTF + LTF alignment confirmed
-    ✔ Strong FVG OR Order Block present
-    ✔ Liquidity sweep or target exists
-    ✔ Entry in premium (SELL) or discount (BUY) zone
-    ✔ Minimum 3 SMC confluences
-- If ANY condition is not met → action must be "NO_TRADE"
-- If HTF bias is unclear → "No clear higher timeframe bias. Stay out."
+- NEVER hallucinate prices, candles, news, or trades
+- ONLY use data provided in the user message
+- NEVER trade against Weekly or Daily HTF bias
+- NEVER self-modify core trading logic
+- NEVER change user-defined strategy rules
 
-Signal output MUST be valid JSON:
+TRADE VALIDATION (ALL must be met):
+  ✔ HTF + LTF alignment confirmed
+  ✔ Strong FVG OR Order Block present
+  ✔ Liquidity sweep or target exists
+  ✔ Entry in premium (SELL) or discount (BUY) zone
+  ✔ Minimum 3 SMC confluences
+
+IF NO TRADE — you MUST explain WHY with this format:
 {
-  "action": "BUY" | "SELL" | "NO_TRADE",
+  "action": "NO_TRADE",
+  "reason": "string — primary reason",
+  "missing_confluences": ["✘ list each missing confluence"],
+  "present_confluences": ["✔ list what IS present"],
+  "setup_score": 0-100,
+  "recommendation": "string — what to wait for",
+  "reasoning": "string"
+}
+
+IF TRADE — signal output:
+{
+  "action": "BUY" | "SELL",
   "entry": float,
   "stop_loss": float,
   "take_profit": float,
   "rr_ratio": float,
   "confidence": "HIGH" | "MEDIUM" | "LOW",
-  "reasoning": "string — cite specific SMC structures used",
-  "confluences": ["list of SMC confluences that validated this trade"],
+  "confluence_score": 0-100,
+  "confluences": ["✔ each confluence with price level"],
+  "lessons_used": ["lesson titles that influenced this decision"],
+  "smc_structure_used": "exact structure + price level",
+  "reasoning": "full transparent reasoning chain",
   "key_levels": {"support": float, "resistance": float},
   "premium_discount": "premium" | "discount" | "equilibrium",
   "htf_bias": "bullish" | "bearish" | "ranging",
   "entry_timeframe": "string",
-  "invalidation": "string"
+  "invalidation": "exact price/candle that kills this setup"
 }
 """.strip()
 
@@ -230,13 +256,21 @@ Provide a structured narrative covering:
 
         # --- Hard gate 3: HTF alignment ---
         if not mtf_result.htf_aligned:
-            return _no_trade(symbol, timeframe, price_info,
-                             mtf_result.block_reason or "HTF not aligned.")
+            explanation = self.memory.explain_no_trade(
+                symbol, timeframe, mtf_data,
+                mtf_result.confluence_details,
+                mtf_result.block_reason or "HTF not aligned.",
+            )
+            return _no_trade_explained(symbol, timeframe, price_info, explanation)
 
         # --- Hard gate 4: Minimum confluences ---
         if not mtf_result.trade_allowed:
-            return _no_trade(symbol, timeframe, price_info,
-                             mtf_result.block_reason or "Insufficient SMC confluences.")
+            explanation = self.memory.explain_no_trade(
+                symbol, timeframe, mtf_data,
+                mtf_result.confluence_details,
+                mtf_result.block_reason or "Insufficient SMC confluences.",
+            )
+            return _no_trade_explained(symbol, timeframe, price_info, explanation)
 
         # --- AI signal generation ---
         # Inject memory context — bot learns from past signals
@@ -736,4 +770,34 @@ def _no_trade(
         "take_profit":   None,
         "rr_ratio":      None,
         "confluences":   [],
+    }
+
+
+def _no_trade_explained(
+    symbol: str,
+    timeframe: str,
+    price_info: dict,
+    explanation,
+) -> dict:
+    """Returns a NO_TRADE with full structured explanation."""
+    from app.memory import NoTradeExplanation
+    return {
+        "action":               "NO_TRADE",
+        "symbol":               symbol,
+        "timeframe":            timeframe,
+        "current_price":        price_info,
+        "news_blocked":         False,
+        "reasoning":            explanation.reason,
+        "missing_confluences":  explanation.missing_confluences,
+        "present_confluences":  explanation.present_confluences,
+        "setup_score":          explanation.score,
+        "htf_status":           explanation.htf_status,
+        "session_status":       explanation.session_status,
+        "recommendation":       explanation.recommendation,
+        "confidence":           "LOW",
+        "entry":                None,
+        "stop_loss":            None,
+        "take_profit":          None,
+        "rr_ratio":             None,
+        "confluences":          explanation.present_confluences,
     }
