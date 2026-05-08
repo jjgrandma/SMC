@@ -281,8 +281,27 @@ Provide a structured narrative covering:
         if resolved:
             logger.info("Auto-resolved %d pending signals", len(resolved))
 
+        # Fetch LTF data for precise entry refinement
+        from app.tools import get_market_data
+        df_ltf_m15 = get_market_data(symbol, "M15")
+        df_ltf_m5  = get_market_data(symbol, "M5")
+        ltf_engine = self.mtf_engine._smc
+        ltf_m15    = analysis_to_dict(ltf_engine.analyze(df_ltf_m15)) if df_ltf_m15 is not None else {}
+        ltf_m5     = analysis_to_dict(ltf_engine.analyze(df_ltf_m5))  if df_ltf_m5  is not None else {}
+
         prompt = f"""
 Generate a precise SMC trade signal for {symbol}.
+
+TWO-PHASE ENTRY SYSTEM (MANDATORY):
+  Phase 1 — HTF Context (H4/D1): defines bias, OB location, liquidity targets
+  Phase 2 — LTF Entry (M15/M5): refines exact entry with TIGHT stop loss
+
+ENTRY TIMEFRAME RULES:
+  - NEVER use H4 as the entry timeframe
+  - Entry candle MUST be on M15 or M5
+  - Stop Loss MUST be placed on M15/M5 structure (NOT H4 structure)
+  - This keeps SL tight (20-50 pips) while TP targets H4/D1 liquidity (100-300 pips)
+  - R:R must be ≥ {settings.min_rr_ratio} using the LTF SL
 
 === TOOL: get_current_price ===
 {json.dumps(price_info, indent=2)}
@@ -296,30 +315,45 @@ Generate a precise SMC trade signal for {symbol}.
 === TOOL: get_economic_calendar ===
 {json.dumps(news_data, indent=2)}
 
-=== TOOL: MTF SMC Analysis ===
+=== HTF CONTEXT (H4/D1 — bias and OB location) ===
 {json.dumps(mtf_data, indent=2)}
 
-CONFIRMED PRE-CONDITIONS:
+=== LTF ENTRY REFINEMENT (M15 — find precise entry) ===
+{json.dumps(ltf_m15, indent=2)}
+
+=== LTF ENTRY REFINEMENT (M5 — tightest entry) ===
+{json.dumps(ltf_m5, indent=2)}
+
+CONFIRMED HTF PRE-CONDITIONS:
 - HTF Aligned: {mtf_result.htf_aligned}
 - Overall Bias: {mtf_result.overall_bias.upper()}
 - Weekly Bias: {mtf_result.weekly_bias.upper()}
 - Daily Bias: {mtf_result.daily_bias.upper()}
-- Confluences found ({mtf_result.confluence_count}):
+- Confluences ({mtf_result.confluence_count}):
 {chr(10).join('  - ' + c for c in mtf_result.confluence_details)}
 
 {memory_context}
 
-ENTRY RULES:
-- Direction MUST match overall bias: {mtf_result.overall_bias.upper()}
-- Entry MUST be at an unmitigated OB or FVG on H1 or M15
-- Entry MUST be in {'DISCOUNT zone (BUY)' if mtf_result.overall_bias == 'bullish' else 'PREMIUM zone (SELL)' if mtf_result.overall_bias == 'bearish' else 'appropriate P/D zone'}
-- Stop Loss: beyond the OB/FVG that triggered entry
-- Take Profit: at the next liquidity zone / swing high or low
-- R:R must be ≥ {settings.min_rr_ratio}
-- USE the memory above — avoid patterns that previously failed, favour patterns that worked
-- If no precise entry exists right now → return action: "NO_TRADE"
+STRICT ENTRY RULES:
+1. Direction MUST match HTF bias: {mtf_result.overall_bias.upper()}
+2. Identify the H4/D1 OB or FVG zone (this is your TARGET AREA)
+3. Wait for price to reach that zone
+4. On M15 or M5: look for a BOS, CHoCH, or OB INSIDE the H4 zone
+5. Entry = M15/M5 OB or FVG level (NOT the H4 level)
+6. Stop Loss = below/above the M15/M5 structure (tight, 20-60 pips max for Gold)
+7. Take Profit = H4/D1 liquidity target (100-300 pips)
+8. This gives R:R of 1:3 to 1:8 with tight risk
+9. If price is NOT currently at an H4 OB/FVG → NO_TRADE (wait for it)
+10. R:R must be ≥ {settings.min_rr_ratio}
+
+STOP LOSS SIZING RULE:
+- For BUY: SL = below the M15 swing low or M15 OB bottom (max 60 pips)
+- For SELL: SL = above the M15 swing high or M15 OB top (max 60 pips)
+- If SL would be > 80 pips on M15 → use M5 structure instead
+- NEVER place SL at the H4 OB boundary (too wide)
 
 Respond ONLY with valid JSON matching the system prompt format.
+Include "entry_timeframe": "M15" or "M5" in your response.
 """.strip()
 
         # ── Dual AI: Gemini (deep) + Groq (quick) in parallel ──

@@ -509,6 +509,21 @@ class MemoryStore:
         lines.append("\n=== ADAPTIVE INTELLIGENCE RULES ===")
         lines.append("- Prioritize HIGH/CRITICAL importance lessons")
         lines.append("- Favour confluences with proven win rates above")
+
+        # Day of week awareness
+        day_analysis = self.get_day_analysis()
+        today        = day_analysis["today"]
+        rating       = day_analysis["today_rating"]
+        today_stats  = day_analysis["today_stats"]
+        if today_stats.get("total", 0) >= 3:
+            wr = today_stats.get("win_rate", 0)
+            lines.append(
+                f"- TODAY IS {today.upper()} — Historical WR: {wr}% "
+                f"[{rating}] — {day_analysis['today_rec']}"
+            )
+            if rating == "AVOID":
+                lines.append(f"  ⚠️ CAUTION: {today} is historically a weak trading day. Be extra selective.")
+
         lines.append("- NEVER self-modify core trading logic")
         lines.append("- NEVER auto-trade — signal only")
         lines.append("- ALWAYS explain reasoning transparently")
@@ -577,7 +592,85 @@ class MemoryStore:
             ],
         )
 
-    def get_pending_signals(self) -> list[SignalRecord]:
+    def get_day_analysis(self) -> dict:
+        """
+        Analyze historical performance by day of week.
+        Returns which days are best/worst for trading based on real history.
+        """
+        from datetime import datetime, timezone
+
+        completed = [s for s in self._signals if s.outcome not in ("PENDING", "CANCELLED")]
+        today     = datetime.now(timezone.utc).strftime("%A")
+
+        day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        day_stats: dict[str, dict] = {}
+
+        for day in day_order:
+            trades = [s for s in completed if s.day_of_week == day]
+            wins   = [s for s in trades if s.outcome == "WIN"]
+            losses = [s for s in trades if s.outcome == "LOSS"]
+            total  = len(wins) + len(losses)
+            wr     = round(len(wins) / total * 100, 1) if total else 0.0
+
+            # Pip stats
+            win_pips  = sum(s.outcome_pips for s in wins  if s.outcome_pips > 0)
+            loss_pips = sum(s.outcome_pips for s in losses if s.outcome_pips < 0)
+            net_pips  = round(win_pips + loss_pips, 1)
+
+            # Best session on this day
+            sess_wins: dict[str, int] = {}
+            for s in wins:
+                sess_wins[s.session] = sess_wins.get(s.session, 0) + 1
+            best_sess = max(sess_wins, key=sess_wins.get) if sess_wins else "N/A"
+
+            day_stats[day] = {
+                "total":     total,
+                "wins":      len(wins),
+                "losses":    len(losses),
+                "win_rate":  wr,
+                "net_pips":  net_pips,
+                "best_session": best_sess,
+                "is_today":  day == today,
+            }
+
+        # Rank days
+        ranked = sorted(
+            [(d, v) for d, v in day_stats.items() if v["total"] >= 2],
+            key=lambda x: (-x[1]["win_rate"], -x[1]["net_pips"]),
+        )
+
+        best_day  = ranked[0][0]  if ranked else "Not enough data"
+        worst_day = ranked[-1][0] if ranked else "Not enough data"
+
+        # Today's recommendation
+        today_stats = day_stats.get(today, {})
+        today_wr    = today_stats.get("win_rate", 0)
+        today_total = today_stats.get("total", 0)
+
+        if today_total < 3:
+            today_rec = "Not enough history for today. Trade with normal caution."
+            today_rating = "NEUTRAL"
+        elif today_wr >= 65:
+            today_rec = f"Strong day historically ({today_wr}% WR). Good conditions to trade."
+            today_rating = "GOOD"
+        elif today_wr >= 50:
+            today_rec = f"Average day ({today_wr}% WR). Trade selectively, wait for A+ setups only."
+            today_rating = "NEUTRAL"
+        else:
+            today_rec = f"Weak day historically ({today_wr}% WR). Consider reducing size or skipping."
+            today_rating = "AVOID"
+
+        return {
+            "today":        today,
+            "today_stats":  today_stats,
+            "today_rating": today_rating,
+            "today_rec":    today_rec,
+            "day_stats":    day_stats,
+            "best_day":     best_day,
+            "worst_day":    worst_day,
+            "ranked":       [(d, v["win_rate"], v["total"]) for d, v in ranked],
+            "total_completed": len(completed),
+        }
         return [s for s in self._signals if s.outcome == "PENDING"]
 
     def get_lessons(self) -> list[Lesson]:

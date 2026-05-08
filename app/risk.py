@@ -23,6 +23,7 @@ class RiskParams:
     take_profit: float
     account_balance: float
     risk_percent: float | None = None
+    is_swing: bool = False  # True = allow wider SL for swing trades
 
 
 @dataclass
@@ -36,19 +37,22 @@ class RiskResult:
 
 
 class RiskManager:
-    # XAUUSD: 1 lot = 100 oz, pip value ≈ $1 per 0.01 move per lot
-    # Simplified: pip_value_per_lot = 1.0 USD for XAUUSD (0.01 price move)
-    PIP_VALUE_PER_LOT = 1.0
-    PIP_SIZE = 0.01
-    MIN_LOT = 0.01
-    MAX_LOT = 100.0
+    # XAUUSD: 1 pip = $0.10, pip value per lot = $10
+    PIP_SIZE = 0.10          # 1 pip for Gold
+    MIN_LOT  = 0.01
+    MAX_LOT  = 100.0
     LOT_STEP = 0.01
+    # SL limits in PRICE POINTS (not pips) for Gold
+    # M15/M5 entry: SL should be 10-30 pts (100-300 pips)
+    # H4 entry: SL would be 50-150 pts (500-1500 pips) — too wide
+    MAX_SL_POINTS       = 35.0   # max 35 pts SL for intraday entries (~350 pips)
+    MAX_SL_POINTS_SWING = 150.0  # max 150 pts SL for swing trades
 
     def validate_and_size(self, params: RiskParams) -> RiskResult:
         risk_pct = params.risk_percent or settings.max_risk_percent
 
         # --- R:R check ---
-        pip_risk = abs(params.entry - params.stop_loss)
+        pip_risk   = abs(params.entry - params.stop_loss)
         pip_reward = abs(params.take_profit - params.entry)
 
         if pip_risk == 0:
@@ -64,6 +68,23 @@ class RiskManager:
                 approved=False, lot_size=0, risk_amount=0,
                 rr_ratio=rr_ratio, pip_risk=pip_risk,
                 rejection_reason=f"R:R {rr_ratio} is below minimum {settings.min_rr_ratio}.",
+            )
+
+        # --- SL too wide check (prevents H4-level SL on LTF entries) ---
+        from app.pip_utils import price_to_pips
+        sl_pips   = price_to_pips(pip_risk, params.symbol)
+        is_swing  = getattr(params, "is_swing", False)
+        max_pts   = self.MAX_SL_POINTS_SWING if is_swing else self.MAX_SL_POINTS
+
+        if pip_risk > max_pts:
+            return RiskResult(
+                approved=False, lot_size=0, risk_amount=0,
+                rr_ratio=rr_ratio, pip_risk=pip_risk,
+                rejection_reason=(
+                    f"SL too wide: {pip_risk:.1f} pts / {sl_pips:.0f} pips "
+                    f"(max {max_pts} pts). "
+                    f"Use M15/M5 structure for a tighter entry."
+                ),
             )
 
         # --- Direction sanity ---

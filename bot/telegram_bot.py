@@ -82,12 +82,13 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("📉 Chart H4",    callback_data="chart_H4")],
         [InlineKeyboardButton("🌅 Briefing",    callback_data="briefing"),
          InlineKeyboardButton("📋 Status",      callback_data="status")],
-        [InlineKeyboardButton("📉 Performance", callback_data="performance"),
-         InlineKeyboardButton("📋 History",     callback_data="history")],
-        [InlineKeyboardButton("🧠 Memory",      callback_data="memory"),
-         InlineKeyboardButton("👤 Profile",     callback_data="profile")],
-        [InlineKeyboardButton("🔔 Alerts ON/OFF", callback_data="toggle_alerts"),
-         InlineKeyboardButton("🖥 MT5 Status",  callback_data="mt5_status")],
+        [InlineKeyboardButton("📅 Trade Day",   callback_data="tradeday"),
+         InlineKeyboardButton("📉 Performance", callback_data="performance")],
+        [InlineKeyboardButton("📋 History",     callback_data="history"),
+         InlineKeyboardButton("🧠 Memory",      callback_data="memory")],
+        [InlineKeyboardButton("👤 Profile",     callback_data="profile"),
+         InlineKeyboardButton("🔔 Alerts",      callback_data="toggle_alerts")],
+        [InlineKeyboardButton("🖥 MT5",         callback_data="mt5_status")],
     ])
 # ---------------------------------------------------------------------------
 # Auth guard
@@ -940,7 +941,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         memory = get_memory()
         stats = memory.get_stats()
         wr = stats.win_rate
-        wr_emoji = "green" if wr >= 60 else "yellow" if wr >= 45 else "red"
         text = (
             f"*BOT MEMORY*\n\n"
             f"Total signals: `{stats.total_signals}`\n"
@@ -950,6 +950,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Total lessons: `{stats.total_lessons}`"
         )
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
+
+    elif data == "tradeday":
+        from app.memory import get_memory
+        memory   = get_memory()
+        analysis = memory.get_day_analysis()
+        today    = analysis["today"]
+        rating   = analysis["today_rating"]
+        rec      = analysis["today_rec"]
+        best     = analysis["best_day"]
+        worst    = analysis["worst_day"]
+        rating_e = {"GOOD": "🟢", "NEUTRAL": "🟡", "AVOID": "🔴"}.get(rating, "⚪")
+        day_stats = analysis["day_stats"]
+        lines = [
+            f"📅 *TRADE DAY — {today}*",
+            f"{rating_e} *{rating}*",
+            f"_{rec}_",
+            f"",
+        ]
+        for day in ["Monday","Tuesday","Wednesday","Thursday","Friday"]:
+            d  = day_stats.get(day, {})
+            t  = d.get("total", 0)
+            wr = d.get("win_rate", 0)
+            w  = d.get("wins", 0)
+            l  = d.get("losses", 0)
+            marker = " ← TODAY" if d.get("is_today") else ""
+            wr_e = "🟢" if wr >= 65 else "🟡" if wr >= 50 else "🔴" if t >= 3 else "⚪"
+            lines.append(f"  {wr_e} `{day[:3]}` {w}W/{l}L `{wr}%`{marker}")
+        lines += [f"", f"🏆 Best: *{best}*  ⚠️ Worst: *{worst}*"]
+        await query.edit_message_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, reply_markup=_back_keyboard())
 
     elif data == "mt5_status":
         try:
@@ -2327,6 +2356,99 @@ async def cmd_restore(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"❌ Restore failed: `{exc}`", parse_mode=ParseMode.MARKDOWN)
 
 
+# ---------------------------------------------------------------------------
+# /tradeday — show trading day analysis
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_tradeday(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app.memory import get_memory
+    memory   = get_memory()
+    analysis = memory.get_day_analysis()
+
+    today        = analysis["today"]
+    today_stats  = analysis["today_stats"]
+    today_rating = analysis["today_rating"]
+    today_rec    = analysis["today_rec"]
+    day_stats    = analysis["day_stats"]
+    best_day     = analysis["best_day"]
+    worst_day    = analysis["worst_day"]
+    total        = analysis["total_completed"]
+
+    rating_emoji = {"GOOD": "🟢", "NEUTRAL": "🟡", "AVOID": "🔴"}.get(today_rating, "⚪")
+
+    def day_bar(wr: float) -> str:
+        filled = int(wr / 10)
+        return "█" * filled + "░" * (10 - filled)
+
+    lines = [
+        f"📅 *TRADE DAY ANALYSIS*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"Based on `{total}` completed trades",
+        f"",
+        f"*Today: {today}*",
+        f"{rating_emoji} Rating: *{today_rating}*",
+    ]
+
+    if today_stats.get("total", 0) >= 3:
+        wr  = today_stats.get("win_rate", 0)
+        net = today_stats.get("net_pips", 0)
+        w   = today_stats.get("wins", 0)
+        l   = today_stats.get("losses", 0)
+        bs  = today_stats.get("best_session", "N/A")
+        net_sign = "+" if net >= 0 else ""
+        lines += [
+            f"  Win Rate: `{wr}%`  `{day_bar(wr)}`",
+            f"  Record:   `{w}W / {l}L`",
+            f"  Net Pips: `{net_sign}{net} pips`",
+            f"  Best Session: `{bs}`",
+        ]
+    else:
+        lines.append(f"  _Not enough history yet (need 3+ trades)_")
+
+    lines += [
+        f"",
+        f"_{today_rec}_",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"*All Days Ranked*",
+    ]
+
+    day_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    for day in day_order:
+        d = day_stats.get(day, {})
+        t = d.get("total", 0)
+        if t == 0:
+            lines.append(f"  `{day[:3]}` — _no data_")
+            continue
+        wr  = d.get("win_rate", 0)
+        net = d.get("net_pips", 0)
+        w   = d.get("wins", 0)
+        l   = d.get("losses", 0)
+        wr_e = "🟢" if wr >= 65 else "🟡" if wr >= 50 else "🔴"
+        today_marker = " ← TODAY" if d.get("is_today") else ""
+        net_sign = "+" if net >= 0 else ""
+        lines.append(
+            f"  {wr_e} `{day[:3]}` `{wr}%` {w}W/{l}L "
+            f"`{net_sign}{net}p` `{day_bar(wr)}`{today_marker}"
+        )
+
+    lines += [
+        f"",
+        f"🏆 Best day:  *{best_day}*",
+        f"⚠️ Worst day: *{worst_day}*",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"_Data grows as you record more outcomes with /outcome_",
+    ]
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=back_kb(),
+    )
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -2495,6 +2617,7 @@ def main():
     app.add_handler(CommandHandler("storage",       cmd_storage))
     app.add_handler(CommandHandler("backup",        cmd_backup))
     app.add_handler(CommandHandler("restore",       cmd_restore))
+    app.add_handler(CommandHandler("tradeday",      cmd_tradeday))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
