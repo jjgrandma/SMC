@@ -2449,6 +2449,191 @@ async def cmd_tradeday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ---------------------------------------------------------------------------
+# /recap — weekly recap on demand
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_recap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text(
+        f"📊 Generating weekly recap for {SYMBOL}...\n_This takes ~45 seconds_",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    try:
+        data  = await _post("/weekly_recap", {"symbol": SYMBOL})
+        parts = _fmt_weekly_recap(data)
+        await msg.edit_text(parts[0], parse_mode=ParseMode.MARKDOWN)
+        for part in parts[1:]:
+            await update.message.reply_text(part, parse_mode=ParseMode.MARKDOWN)
+    except Exception as exc:
+        logger.exception("Error in /recap")
+        await msg.edit_text(f"❌ Error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# /marketstatus — show current market hours
+# ---------------------------------------------------------------------------
+
+@restricted
+async def cmd_marketstatus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from app.market_hours import get_market_status, format_market_status
+    status = get_market_status()
+    text   = (
+        f"🕐 *GOLD MARKET STATUS*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{format_market_status(status)}"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=back_kb())
+
+
+def _fmt_weekly_recap(data: dict) -> list[str]:
+    """Format weekly recap into multiple Telegram messages."""
+    if "error" in data:
+        return [f"❌ Weekly recap failed: {data['error']}"]
+
+    gen_at    = data.get("generated_at", "")
+    symbol    = data.get("symbol", "XAUUSD")
+    price     = data.get("price_info", {}).get("mid", "N/A")
+    w_bias    = data.get("weekly_bias", "N/A").upper()
+    d_bias    = data.get("daily_bias", "N/A").upper()
+    nw_bias   = data.get("next_week_bias", "NEUTRAL")
+    nw_conf   = data.get("next_week_bias_confidence", "LOW")
+    w_emoji   = "🟢" if w_bias == "BULLISH" else "🔴" if w_bias == "BEARISH" else "⚪"
+    d_emoji   = "🟢" if d_bias == "BULLISH" else "🔴" if d_bias == "BEARISH" else "⚪"
+    nw_emoji  = "🟢" if nw_bias == "BUY" else "🔴" if nw_bias == "SELL" else "⚪"
+    conf_e    = {"HIGH": "🔥", "MEDIUM": "⚡", "LOW": "💡"}.get(nw_conf, "")
+
+    kl        = data.get("key_levels_next_week", {})
+    plan      = data.get("trade_plan_next_week", {})
+    scenarios = data.get("next_week_scenarios", {})
+    structure = data.get("current_structure", {})
+
+    # Week candles summary
+    week_candles = data.get("week_candles", [])
+    candle_lines = ""
+    for c in week_candles[-5:]:
+        d_e = "🟢" if c.get("direction") == "bullish" else "🔴"
+        candle_lines += (
+            f"\n  {d_e} {c.get('day','')[:3]} "
+            f"H:`{c.get('high')}` L:`{c.get('low')}` "
+            f"C:`{c.get('close')}` ({c.get('change_pct',0):+.1f}%)"
+        )
+
+    # Part 1 — Header + week summary + structure
+    part1 = [
+        f"📊 *WEEKLY RECAP — {symbol}*",
+        f"📅 `{gen_at}`",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"💰 Close: `{price}`",
+        f"{w_emoji} Weekly Bias: *{w_bias}*",
+        f"{d_emoji} Daily Bias:  *{d_bias}*",
+        f"",
+        f"*This Week's Candles*{candle_lines}",
+        f"",
+        f"*Week Summary*",
+        f"_{data.get('week_summary', 'N/A')}_",
+        f"",
+        f"*Weekly Candle Analysis*",
+        f"_{data.get('weekly_candle_analysis', 'N/A')}_",
+        f"",
+        f"*Market Structure This Week*",
+        f"_{data.get('market_structure_this_week', 'N/A')}_",
+    ]
+
+    # Part 2 — Key levels + institutional activity
+    part2 = [
+        f"*Key Levels Hit This Week*",
+        f"_{data.get('key_levels_hit', 'N/A')}_",
+        f"",
+        f"*Institutional Activity*",
+        f"_{data.get('institutional_activity', 'N/A')}_",
+        f"",
+        f"*Current Structure*",
+        f"  Trend: `{structure.get('trend','N/A')}`",
+        f"  Last BOS: `{structure.get('last_bos','N/A')}`",
+        f"  Last CHoCH: `{structure.get('last_choch','N/A')}`",
+        f"  Zone: `{structure.get('premium_discount','N/A')}`",
+        f"  EQ: `{structure.get('equilibrium','N/A')}`",
+        f"",
+        f"*Key Levels Next Week*",
+    ]
+    if kl:
+        res = kl.get("major_resistance", [])
+        sup = kl.get("major_support", [])
+        if res:
+            part2.append("  🔴 Resistance: " + " | ".join([f"`{r}`" for r in res if r]))
+        if sup:
+            part2.append("  🟢 Support:    " + " | ".join([f"`{s}`" for s in sup if s]))
+        for k, label in [
+            ("weekly_high","W High"), ("weekly_low","W Low"),
+            ("previous_week_high","PW High"), ("previous_week_low","PW Low"),
+        ]:
+            if kl.get(k):
+                part2.append(f"  {label}: `{kl[k]}`")
+        if kl.get("order_blocks_to_watch"):
+            part2 += [f"", f"  *OBs to Watch*", f"  _{kl['order_blocks_to_watch']}_"]
+        if kl.get("fvgs_to_watch"):
+            part2 += [f"  *FVGs to Watch*", f"  _{kl['fvgs_to_watch']}_"]
+        if kl.get("liquidity_above"):
+            part2 += [f"  *Liquidity Above*", f"  _{kl['liquidity_above']}_"]
+        if kl.get("liquidity_below"):
+            part2 += [f"  *Liquidity Below*", f"  _{kl['liquidity_below']}_"]
+
+    # Part 3 — Next week scenarios + trade plan
+    part3 = [
+        f"*Next Week Scenarios*",
+        f"",
+        f"🟢 *Bullish Scenario*",
+        f"_{scenarios.get('bullish_scenario','N/A')}_",
+        f"",
+        f"🔴 *Bearish Scenario*",
+        f"_{scenarios.get('bearish_scenario','N/A')}_",
+        f"",
+        f"⚪ *Ranging Scenario*",
+        f"_{scenarios.get('ranging_scenario','N/A')}_",
+    ]
+
+    # Part 4 — Trade plan + analysis
+    part4 = [
+        f"*Next Week Bias*",
+        f"{nw_emoji} *{nw_bias}* {conf_e} `{nw_conf}` confidence",
+        f"",
+        f"*Trade Plan Next Week*",
+        f"  🎯 Primary: _{plan.get('primary_setup','N/A')}_",
+        f"  📋 Secondary: _{plan.get('secondary_setup','N/A')}_",
+        f"  📅 Best Days: _{plan.get('best_days_to_trade','N/A')}_",
+        f"  🕐 Best Sessions: _{plan.get('best_sessions','N/A')}_",
+        f"  🚫 Avoid If: _{plan.get('avoid_if','N/A')}_",
+        f"  📰 News: _{plan.get('news_to_watch','N/A')}_",
+        f"",
+        f"*Fibonacci Analysis*",
+        f"_{data.get('fibonacci_analysis','N/A')}_",
+        f"",
+        f"*SMC Confluences*",
+        f"_{data.get('smc_confluence_summary','N/A')}_",
+        f"",
+        f"*Risk Management*",
+        f"_{data.get('risk_management_note','N/A')}_",
+        f"",
+        f"*Experience Insight*",
+        f"_{data.get('experience_insight','N/A')}_",
+        f"",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"*Executive Summary*",
+        f"_{data.get('executive_summary','N/A')}_",
+        f"",
+        f"_Generated: {gen_at}_",
+    ]
+
+    parts = []
+    for part in [part1, part2, part3, part4]:
+        text = "\n".join(part)
+        if len(text) > 4000:
+            text = text[:3950] + "\n_...truncated_"
+        parts.append(text)
+    return parts
+
+
 async def cmd_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Use /start to see all commands.")
 
@@ -2502,6 +2687,50 @@ async def _morning_briefing_scheduler(app: Application):
                 logger.info("Morning briefing sent to user %d", user.user_id)
             except Exception as exc:
                 logger.error("Failed to send briefing to user %d: %s", user.user_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Weekly recap scheduler — every Saturday at 08:00 UTC
+# ---------------------------------------------------------------------------
+
+async def _weekly_recap_scheduler(app: Application):
+    import datetime as dt
+    logger.info("Weekly recap scheduler: every Saturday at 08:00 UTC")
+
+    while True:
+        now = dt.datetime.now(dt.timezone.utc)
+        # Find next Saturday 08:00 UTC
+        days_until_sat = (5 - now.weekday()) % 7
+        if days_until_sat == 0 and (now.hour > 8 or (now.hour == 8 and now.minute > 0)):
+            days_until_sat = 7  # already past this Saturday's time
+        next_sat = now.replace(hour=8, minute=0, second=0, microsecond=0) + dt.timedelta(days=days_until_sat)
+        wait_secs = (next_sat - now).total_seconds()
+        logger.info("Next weekly recap in %.0f seconds (%s UTC)", wait_secs, next_sat.strftime("%Y-%m-%d %H:%M"))
+        await asyncio.sleep(wait_secs)
+
+        subscribers = profile_store.all_alert_subscribers()
+        if not subscribers:
+            continue
+
+        logger.info("Sending weekly recap to %d subscribers...", len(subscribers))
+        try:
+            data  = await _post("/weekly_recap", {"symbol": SYMBOL})
+            parts = _fmt_weekly_recap(data)
+        except Exception as exc:
+            logger.error("Weekly recap generation failed: %s", exc)
+            continue
+
+        for user in subscribers:
+            try:
+                for part in parts:
+                    await app.bot.send_message(
+                        chat_id=user.user_id,
+                        text=part,
+                        parse_mode="Markdown",
+                    )
+                logger.info("Weekly recap sent to user %d", user.user_id)
+            except Exception as exc:
+                logger.error("Failed to send weekly recap to user %d: %s", user.user_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -2618,6 +2847,8 @@ def main():
     app.add_handler(CommandHandler("backup",        cmd_backup))
     app.add_handler(CommandHandler("restore",       cmd_restore))
     app.add_handler(CommandHandler("tradeday",      cmd_tradeday))
+    app.add_handler(CommandHandler("recap",         cmd_recap))
+    app.add_handler(CommandHandler("marketstatus",  cmd_marketstatus))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.COMMAND, cmd_unknown))
 
@@ -2637,6 +2868,10 @@ def main():
         # Morning briefing scheduler
         asyncio.create_task(_morning_briefing_scheduler(application))
         logger.info("Morning briefing scheduler started.")
+
+        # Weekly recap scheduler (every Saturday at 08:00 UTC)
+        asyncio.create_task(_weekly_recap_scheduler(application))
+        logger.info("Weekly recap scheduler started.")
 
         # Auto-backup on startup — sends data to all admin users
         asyncio.create_task(_auto_backup_on_start(application))

@@ -68,13 +68,24 @@ class SignalScanner:
     # ------------------------------------------------------------------
 
     async def _scan_all(self):
-        symbol = settings.symbol
-        timeframes = settings.scanner_timeframe_list
+        from app.market_hours import is_trading_allowed, get_market_status
+        symbol      = settings.symbol
+        timeframes  = settings.scanner_timeframe_list
         subscribers = self.profile_store.all_alert_subscribers()
 
         if not subscribers:
             logger.debug("No alert subscribers — skipping scan.")
             return
+
+        # Block scanning when market is closed
+        allowed, mh_reason = is_trading_allowed()
+        if not allowed:
+            logger.info("Scanner blocked — market closed: %s", mh_reason)
+            return
+
+        mh_status = get_market_status()
+        if mh_status.trade_quality == "CAUTION":
+            logger.info("Scanner caution mode — %s", mh_status.reason)
 
         logger.info("Scanning %s on %s for %d subscribers...", symbol, timeframes, len(subscribers))
 

@@ -245,6 +245,16 @@ Provide a structured narrative covering:
                              "High-impact news event within 30 minutes. Trading blocked.",
                              news_blocked=True)
 
+        # --- Hard gate 0: Market hours ---
+        from app.market_hours import is_trading_allowed, get_market_status
+        allowed, mh_reason = is_trading_allowed()
+        if not allowed:
+            status = get_market_status()
+            return _no_trade(
+                symbol, timeframe, price_info,
+                f"Market closed: {mh_reason} Next open: {status.next_open}",
+            )
+
         # --- Hard gate 2: Existing exposure ---
         if active_trades["position_count"] > 0:
             return _no_trade(symbol, timeframe, price_info,
@@ -765,6 +775,177 @@ If it is London/NY, focus on the current session setup.
         briefing["session"]      = session_name
         briefing["next_session"] = next_session
         return briefing
+
+    # ------------------------------------------------------------------
+    # Weekly Recap
+    # ------------------------------------------------------------------
+
+    async def get_weekly_recap(self, symbol: str, user_profile=None) -> dict[str, Any]:
+        from datetime import datetime, timezone
+        from app.tools import get_market_data
+
+        now           = datetime.now(timezone.utc)
+        price_info    = get_current_price(symbol)
+        current_price = price_info.get("mid", 0.0)
+        news_data     = self._tool_news()
+        user_cfg      = self._tool_user_settings(user_profile)
+
+        df_w1 = get_market_data(symbol, "W1")
+        df_d1 = get_market_data(symbol, "D1")
+        df_h4 = get_market_data(symbol, "H4")
+
+        mtf_result = self.mtf_engine.analyze(symbol, current_price)
+        mtf_data   = mtf_to_dict(mtf_result)
+
+        week_candles = []
+        if df_d1 is not None and len(df_d1) >= 7:
+            for i in range(-7, 0):
+                c = df_d1.iloc[i]
+                week_candles.append({
+                    "date":       str(df_d1.index[i].date()),
+                    "day":        df_d1.index[i].strftime("%A"),
+                    "open":       round(float(c["open"]), 2),
+                    "high":       round(float(c["high"]), 2),
+                    "low":        round(float(c["low"]), 2),
+                    "close":      round(float(c["close"]), 2),
+                    "range":      round(float(c["high"]) - float(c["low"]), 2),
+                    "direction":  "bullish" if c["close"] > c["open"] else "bearish",
+                    "body":       round(abs(float(c["close"]) - float(c["open"])), 2),
+                    "change_pct": round((float(c["close"]) - float(c["open"])) / float(c["open"]) * 100, 2),
+                })
+
+        weekly_candles = []
+        if df_w1 is not None and len(df_w1) >= 4:
+            for i in range(-4, 0):
+                c = df_w1.iloc[i]
+                weekly_candles.append({
+                    "week":      str(df_w1.index[i].date()),
+                    "open":      round(float(c["open"]), 2),
+                    "high":      round(float(c["high"]), 2),
+                    "low":       round(float(c["low"]), 2),
+                    "close":     round(float(c["close"]), 2),
+                    "range":     round(float(c["high"]) - float(c["low"]), 2),
+                    "direction": "bullish" if c["close"] > c["open"] else "bearish",
+                })
+
+        h4_week = []
+        if df_h4 is not None and len(df_h4) >= 30:
+            for i in range(-30, 0):
+                c = df_h4.iloc[i]
+                h4_week.append({
+                    "time":      str(df_h4.index[i]),
+                    "open":      round(float(c["open"]), 2),
+                    "high":      round(float(c["high"]), 2),
+                    "low":       round(float(c["low"]), 2),
+                    "close":     round(float(c["close"]), 2),
+                    "direction": "bullish" if c["close"] > c["open"] else "bearish",
+                })
+
+        memory_context = self.memory.get_ai_context(symbol, "W1")
+        day_analysis   = self.memory.get_day_analysis()
+
+        prompt = f"""
+You are a senior institutional Gold (XAUUSD) analyst writing a COMPREHENSIVE WEEKLY RECAP AND NEXT WEEK OUTLOOK.
+This is sent every Saturday. It must be DETAILED, PROFESSIONAL, and ACTIONABLE.
+Do NOT give a brief summary — explore EVERY detail with full SMC analysis.
+
+Date: {now.strftime('%A, %B %d, %Y')}
+Symbol: {symbol}
+
+=== LIVE PRICE ===
+{json.dumps(price_info, indent=2)}
+
+=== THIS WEEK DAILY CANDLES (Mon-Fri) ===
+{json.dumps(week_candles, indent=2)}
+
+=== LAST 4 WEEKLY CANDLES ===
+{json.dumps(weekly_candles, indent=2)}
+
+=== H4 CANDLES THIS WEEK (30 candles) ===
+{json.dumps(h4_week, indent=2)}
+
+=== MULTI-TIMEFRAME SMC ANALYSIS ===
+{json.dumps(mtf_data, indent=2)}
+
+=== ECONOMIC CALENDAR ===
+{json.dumps(news_data, indent=2)}
+
+=== BOT MEMORY ===
+{memory_context}
+
+=== HISTORICAL DAY PERFORMANCE ===
+Best day: {day_analysis.get('best_day','N/A')} | Worst day: {day_analysis.get('worst_day','N/A')}
+
+Generate a COMPREHENSIVE WEEKLY RECAP JSON. Every field must be DETAILED (3-5 sentences minimum):
+
+{{
+  "week_summary": "Full narrative of Mon-Fri price action, key moves, news reactions",
+  "weekly_candle_analysis": "W1 candle type, body/wick analysis, what it signals for next week",
+  "market_structure_this_week": "Every BOS/CHoCH/HH/HL/LH/LL with exact price levels",
+  "key_levels_hit": "Which OBs/FVGs/liquidity zones were hit, respected or broken",
+  "institutional_activity": "Where institutions likely entered, liquidity grabs, accumulation",
+  "weekly_bias": "bullish|bearish|ranging",
+  "daily_bias": "bullish|bearish|ranging",
+  "htf_aligned": true,
+  "current_structure": {{
+    "trend": "string",
+    "last_bos": "direction and price",
+    "last_choch": "direction and price or none",
+    "premium_discount": "where price is relative to weekly range",
+    "equilibrium": 0.0
+  }},
+  "key_levels_next_week": {{
+    "major_resistance": [0.0, 0.0, 0.0],
+    "major_support": [0.0, 0.0, 0.0],
+    "weekly_high": 0.0,
+    "weekly_low": 0.0,
+    "previous_week_high": 0.0,
+    "previous_week_low": 0.0,
+    "order_blocks_to_watch": "List each OB with price and direction",
+    "fvgs_to_watch": "List each unfilled FVG with price range",
+    "liquidity_above": "BSL levels with exact prices",
+    "liquidity_below": "SSL levels with exact prices"
+  }},
+  "next_week_scenarios": {{
+    "bullish_scenario": "DETAILED: what price needs for bulls. Entry zone, confirmation, targets, SMC structures",
+    "bearish_scenario": "DETAILED: what price needs for bears. Entry zone, confirmation, targets, SMC structures",
+    "ranging_scenario": "If neither plays out, expected range and how to trade it"
+  }},
+  "next_week_bias": "BUY|SELL|NEUTRAL",
+  "next_week_bias_confidence": "HIGH|MEDIUM|LOW",
+  "trade_plan_next_week": {{
+    "primary_setup": "The #1 setup to watch: entry zone, confirmation, SL, TP, R:R",
+    "secondary_setup": "Backup setup if primary fails",
+    "best_days_to_trade": "Based on historical data and expected volatility",
+    "best_sessions": "London/NY/overlap and why",
+    "avoid_if": "Conditions that cancel the entire plan",
+    "news_to_watch": "Key economic events next week affecting Gold"
+  }},
+  "fibonacci_analysis": "Fib levels from this week high/low. Key levels for next week entries",
+  "smc_confluence_summary": "ALL SMC confluences for next week primary setup with scores",
+  "risk_management_note": "Position sizing and risk advice for next week volatility",
+  "experience_insight": "Professional insight about Gold behavior in this weekly structure",
+  "executive_summary": "4-5 sentence summary. The most important thing to know for next week"
+}}
+""".strip()
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ]
+        recap, ai_meta = await dual_chat_json(messages, temperature=0.3, max_tokens=2000)
+
+        if not recap:
+            recap = {"error": "AI failed to generate weekly recap."}
+
+        recap["symbol"]         = symbol
+        recap["price_info"]     = price_info
+        recap["week_candles"]   = week_candles
+        recap["weekly_candles"] = weekly_candles
+        recap["mtf_data"]       = mtf_data
+        recap["ai_meta"]        = ai_meta
+        recap["generated_at"]   = now.strftime("%Y-%m-%d %H:%M UTC")
+        return recap
 
     async def get_status(self, symbol: str, user_profile=None) -> dict[str, Any]:
         price_info    = get_current_price(symbol)

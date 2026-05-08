@@ -94,6 +94,10 @@ class BriefingRequest(BaseModel):
     symbol: str = Field(default="XAUUSD")
 
 
+class WeeklyRecapRequest(BaseModel):
+    symbol: str = Field(default="XAUUSD")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -192,6 +196,34 @@ async def morning_briefing(req: BriefingRequest):
     except Exception as exc:
         logger.exception("Error in /briefing")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/weekly_recap")
+async def weekly_recap_endpoint(req: BriefingRequest):
+    """Deep weekly recap — sent every Saturday."""
+    try:
+        result = await agent.get_weekly_recap(req.symbol)
+        return result
+    except Exception as exc:
+        logger.exception("Error in /weekly_recap")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/market_status")
+async def market_status_endpoint():
+    """Current Gold market hours status."""
+    from app.market_hours import get_market_status
+    s = get_market_status()
+    return {
+        "is_open":       s.is_open,
+        "session":       s.session,
+        "trade_quality": s.trade_quality,
+        "next_open":     s.next_open,
+        "next_close":    s.next_close,
+        "day":           s.day_of_week,
+        "warning":       s.warning,
+        "reason":        s.reason,
+    }
 
 
 @app.get("/chart/mtf")
