@@ -154,7 +154,7 @@ def _count_confluences(
 # ---------------------------------------------------------------------------
 
 class MTFEngine:
-    MIN_CONFLUENCES = 3
+    MIN_CONFLUENCES = 2  # lowered from 3 — Gold setups rarely hit 3 across all TFs
 
     def __init__(self):
         self._smc = _Engine()

@@ -43,10 +43,10 @@ class RiskManager:
     MAX_LOT  = 100.0
     LOT_STEP = 0.01
     # SL limits in PRICE POINTS (not pips) for Gold
-    # M15/M5 entry: SL should be 10-30 pts (100-300 pips)
-    # H4 entry: SL would be 50-150 pts (500-1500 pips) — too wide
-    MAX_SL_POINTS       = 35.0   # max 35 pts SL for intraday entries (~350 pips)
-    MAX_SL_POINTS_SWING = 150.0  # max 150 pts SL for swing trades
+    # M15/M5 entry: SL should be 10-80 pts (100-800 pips)
+    # H4 entry: SL would be 50-150 pts (500-1500 pips)
+    MAX_SL_POINTS       = 100.0  # max 100 pts SL for intraday entries (Gold realistic range)
+    MAX_SL_POINTS_SWING = 200.0  # max 200 pts SL for swing trades
 
     def validate_and_size(self, params: RiskParams) -> RiskResult:
         risk_pct = params.risk_percent or settings.max_risk_percent

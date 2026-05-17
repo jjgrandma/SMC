@@ -296,33 +296,12 @@ def get_current_price(symbol: str) -> dict[str, Any]:
 
 def get_economic_calendar() -> list[dict[str, Any]]:
     """
-    PLACEHOLDER FOR:
-    - ForexFactory API  (scrape or use community JSON feed)
-    - Investing.com economic calendar
-    - Myfxbook calendar
-
-    High-impact events block trade execution.
-    Currently returns synthetic upcoming events for development.
+    Returns economic calendar events.
+    Connect a real feed here (ForexFactory, Investing.com, Myfxbook).
+    Returning empty list until a real source is wired up — fake HIGH-impact
+    events were previously blocking all trade signals.
     """
-    now = datetime.utcnow()
-    return [
-        {
-            "time": (now + timedelta(hours=2)).isoformat(),
-            "currency": "USD",
-            "event": "Non-Farm Payrolls",
-            "impact": "HIGH",
-            "forecast": "180K",
-            "previous": "175K",
-        },
-        {
-            "time": (now + timedelta(hours=5)).isoformat(),
-            "currency": "USD",
-            "event": "CPI m/m",
-            "impact": "HIGH",
-            "forecast": "0.3%",
-            "previous": "0.4%",
-        },
-    ]
+    return []
 
 
 def is_high_impact_news_window(symbol: str, window_minutes: int = 30) -> bool:
