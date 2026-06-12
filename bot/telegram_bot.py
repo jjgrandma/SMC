@@ -2873,6 +2873,12 @@ def main():
         asyncio.create_task(_weekly_recap_scheduler(application))
         logger.info("Weekly recap scheduler started.")
 
+        # Keep-alive mechanism for Railway (prevents sleep)
+        from app.keepalive import KeepAlive
+        keepalive = KeepAlive(interval_minutes=10)
+        asyncio.create_task(keepalive.start())
+        logger.info("Keep-alive started — prevents Railway sleep.")
+
         # Auto-backup on startup — sends data to all admin users
         asyncio.create_task(_auto_backup_on_start(application))
 

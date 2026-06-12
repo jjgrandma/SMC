@@ -671,6 +671,9 @@ class MemoryStore:
             "ranked":       [(d, v["win_rate"], v["total"]) for d, v in ranked],
             "total_completed": len(completed),
         }
+
+    def get_pending_signals(self) -> list[SignalRecord]:
+        """Return all signals with PENDING outcome."""
         return [s for s in self._signals if s.outcome == "PENDING"]
 
     def get_lessons(self) -> list[Lesson]:
