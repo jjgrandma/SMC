@@ -1,0 +1,43 @@
+services:
+  - type: worker
+    name: trading-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run_bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_ALLOWED_USERS
+        value: 1483953294,2079424755
+      - key: SYMBOL
+        value: GC=F
+      - key: MT5_ENABLED
+        value: false
+      - key: SCANNER_ENABLED
+        value: true
+      - key: SCANNER_INTERVAL_MINUTES
+        value: 15
+      - key: SCANNER_TIMEFRAMES
+        value: M15,H1,H4
+      - key: MAX_RISK_PERCENT
+        value: 1.0
+      - key: MIN_RR_RATIO
+        value: 2.0
+      - key: AI_PROVIDER
+        value: groq
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: BRIEFING_HOUR
+        value: 7
+      - key: BRIEFING_MINUTE
+        value: 0
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        value: 8000
